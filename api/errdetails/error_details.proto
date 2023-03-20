@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package errdetail;
+option go_package = "github.com/anthonycorbacho/workspace/api/errdetails;errdetails";
+
+// Describes the cause of the error with structured details.
+//
+// Example of an error when contacting the "organization" API when it
+// fail adding members to an organization:
+//
+//     {
+//       "reason": "ALREADY_EXIST"
+//       "metadata": {
+//         "user_id": "1234",
+//         "org_id": "2345"
+//       }
+//     }
+//
+// This response indicates that the member is already part of the organization.
+message ErrorInfo {
+  // The reason of the error. This is a constant value that identifies the
+  // proximate cause of the error. Error reasons are unique within a particular
+  // domain of errors. This should be at most 63 characters and match
+  string reason = 1;
+
+  // Additional structured details about this error.
+  map<string, string> metadata = 2;
+}

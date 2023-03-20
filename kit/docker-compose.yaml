@@ -1,0 +1,10 @@
+# Docker-compose for unit test of Kit framework
+version: '3.8'
+
+services:
+
+  # Kit cache dependency
+  redis:
+    image: redis
+    ports:
+      - '6379:6379'
