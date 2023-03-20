@@ -1,0 +1,26 @@
+name: Kit framework Unit test
+on:
+  pull_request:
+    types: [ opened, synchronize ]
+    paths:
+      - "kit/**/*.go"
+
+env:
+  TESTINGREDIS_URL: ":6379"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.20.x
+      - name: Start up docker compose
+        run: docker-compose -f kit/docker-compose.yaml up -d --remove-orphans
+      - name: Run Kit Test
+        run: go test -v -race -p=6 -cpu=1,4 ./kit/...
+      - name: Stop containers
+        if: always()
+        run: docker-compose -f kit/docker-compose.yaml down
