@@ -3,6 +3,8 @@ package cache
 import (
 	"context"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // Cache provides a way define how we cache data.
