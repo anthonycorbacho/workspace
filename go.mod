@@ -19,6 +19,7 @@ require (
 	github.com/prometheus/client_golang v1.14.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.0.2
 	github.com/redis/go-redis/v9 v9.0.2
+	github.com/rs/cors v1.8.3
 	github.com/rs/xid v1.4.0
 	github.com/sethvargo/go-envconfig v0.9.0
 	github.com/slok/go-http-metrics v0.10.0
@@ -36,6 +37,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.14.0
 	go.opentelemetry.io/otel/sdk/metric v0.37.0
 	go.opentelemetry.io/otel/trace v1.14.0
+	go.uber.org/automaxprocs v1.5.1
 	go.uber.org/zap v1.24.0
 	google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4
 	google.golang.org/grpc v1.53.0
