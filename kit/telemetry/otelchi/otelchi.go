@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.18.0"
+	"go.opentelemetry.io/otel/semconv/v1.18.0/httpconv"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -126,6 +127,8 @@ func (tw traceware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := []oteltrace.SpanStartOption{
+		oteltrace.WithAttributes(httpconv.ClientRequest(r)...),
+		oteltrace.WithAttributes(httpconv.ServerRequest(tw.serverName, r)...),
 		oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 	}
 
@@ -148,9 +151,14 @@ func (tw traceware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		spanName = addPrefixToSpanName(tw.reqMethodInSpanName, r.Method, routePattern)
 		span.SetName(spanName)
 	}
+	span.SetAttributes(semconv.HTTPRouteKey.String(routePattern))
 
 	// set status code attribute
 	span.SetAttributes(semconv.HTTPStatusCodeKey.Int(rrw.status))
+
+	// set span status
+	spanStatus, spanMessage := httpconv.ClientStatus(rrw.status)
+	span.SetStatus(spanStatus, spanMessage)
 }
 
 func addPrefixToSpanName(shouldAdd bool, prefix, spanName string) string {
