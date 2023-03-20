@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package pagination.v1;
+option go_package = "github.com/anthonycorbacho/workspace/kit/pagination/v1;paginationv1";
+
+// PageIdentifier represents a Page Identifier.
+message PageIdentifier {
+  // name is  the name of the PageIdentifier, this could be a ID (database) or a resource name
+  string name = 1;
+  // filter represents filtering option for the pagination
+  string filter = 2;
+}
