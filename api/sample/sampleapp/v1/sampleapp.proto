@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package sample.sampleapp.v1;
+option go_package = "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1;sampleappv1";
+
+import "google/api/annotations.proto";
+import "validate/validate.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  info: {
+    title: "Sample App";
+    version: "1.0";
+  };
+  host: "sampleapp.example.org";
+  schemes: HTTPS;
+  consumes: "application/json";
+  produces: "application/json";
+};
+
+// SampleApp is a example of API definition.
+service SampleApp {
+
+  // Fetch a single user.
+  rpc Fetch(FetchRequest) returns (FetchResponse) {
+    option (google.api.http) = {
+      get: "/v1/users/{id}"
+    };
+  }
+
+  // Create a user.
+  rpc Create(CreateRequest) returns (CreateResponse) {
+    option (google.api.http) = {
+      post: "/v1/users"
+      body: "*"
+    };
+  }
+
+  // Delete users.
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {
+    option (google.api.http) = {
+      delete: "/v1/users/{id}"
+    };
+  }
+
+}
+
+message FetchRequest {
+  string id = 1 [(validate.rules).string.min_len = 4];
+}
+message FetchResponse{
+  string name = 1;
+}
+
+message CreateRequest{
+  string name = 1 [(validate.rules).string = {min_len: 4, max_len: 42}];
+}
+
+message CreateResponse{
+  string id = 1;
+  string name = 2;
+}
+
+message DeleteRequest {
+  string id = 1 [(validate.rules).string.min_len = 4];
+}
+
+message DeleteResponse {}
