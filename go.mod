@@ -7,6 +7,8 @@ require (
 	github.com/felixge/httpsnoop v1.0.3
 	github.com/go-chi/chi/v5 v5.0.8
 	github.com/golang/protobuf v1.5.2
+	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
+	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.15.2
 	github.com/prometheus/client_golang v1.14.0
 	github.com/redis/go-redis/extra/redisotel/v9 v9.0.2
@@ -16,6 +18,7 @@ require (
 	github.com/slok/go-http-metrics v0.10.0
 	github.com/stretchr/testify v1.8.2
 	github.com/vmihailenco/msgpack/v5 v5.3.5
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.40.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.15.0
 	go.opentelemetry.io/otel v1.14.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.14.0

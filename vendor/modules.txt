@@ -42,6 +42,16 @@ github.com/golang/protobuf/ptypes
 github.com/golang/protobuf/ptypes/any
 github.com/golang/protobuf/ptypes/duration
 github.com/golang/protobuf/ptypes/timestamp
+# github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
+## explicit; go 1.14
+github.com/grpc-ecosystem/go-grpc-middleware/recovery
+github.com/grpc-ecosystem/go-grpc-middleware/retry
+github.com/grpc-ecosystem/go-grpc-middleware/util/backoffutils
+github.com/grpc-ecosystem/go-grpc-middleware/util/metautils
+github.com/grpc-ecosystem/go-grpc-middleware/validator
+# github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
+## explicit
+github.com/grpc-ecosystem/go-grpc-prometheus
 # github.com/grpc-ecosystem/grpc-gateway/v2 v2.15.2
 ## explicit; go 1.17
 github.com/grpc-ecosystem/grpc-gateway/v2/internal/casing
@@ -124,6 +134,10 @@ github.com/vmihailenco/msgpack/v5/msgpcode
 github.com/vmihailenco/tagparser/v2
 github.com/vmihailenco/tagparser/v2/internal
 github.com/vmihailenco/tagparser/v2/internal/parser
+# go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.40.0
+## explicit; go 1.18
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc
+go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc/internal
 # go.opentelemetry.io/contrib/propagators/b3 v1.15.0
 ## explicit; go 1.18
 go.opentelemetry.io/contrib/propagators/b3
@@ -207,6 +221,7 @@ go.uber.org/zap/internal/exit
 go.uber.org/zap/zapcore
 # golang.org/x/net v0.7.0
 ## explicit; go 1.17
+golang.org/x/net/context
 golang.org/x/net/http/httpguts
 golang.org/x/net/http2
 golang.org/x/net/http2/hpack
