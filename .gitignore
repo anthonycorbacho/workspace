@@ -1,0 +1,28 @@
+## IDE folders
+.idea/
+.vscode
+*~
+\#*\#
+.\#*
+
+### VS Code
+__debug_bin
+
+## OSX file
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+## Folders
+_obj
+_test
+
+
+### Other
+*.exe
+*.test
+*.prof
+
+## Secrets
+*secret.yaml
