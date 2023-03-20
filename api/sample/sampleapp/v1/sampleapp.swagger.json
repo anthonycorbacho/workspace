@@ -28,7 +28,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/CreateResponse"
+              "$ref": "#/definitions/v1CreateResponse"
             }
           },
           "default": {
@@ -44,7 +44,7 @@
             "in": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/CreateRequest"
+              "$ref": "#/definitions/v1CreateRequest"
             }
           }
         ],
@@ -61,7 +61,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/FetchResponse"
+              "$ref": "#/definitions/v1FetchResponse"
             }
           },
           "default": {
@@ -90,7 +90,7 @@
           "200": {
             "description": "A successful response.",
             "schema": {
-              "$ref": "#/definitions/DeleteResponse"
+              "$ref": "#/definitions/v1DeleteResponse"
             }
           },
           "default": {
@@ -115,36 +115,6 @@
     }
   },
   "definitions": {
-    "CreateRequest": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        }
-      }
-    },
-    "CreateResponse": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        }
-      }
-    },
-    "DeleteResponse": {
-      "type": "object"
-    },
-    "FetchResponse": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        }
-      }
-    },
     "protobufAny": {
       "type": "object",
       "properties": {
@@ -169,6 +139,36 @@
           "items": {
             "$ref": "#/definitions/protobufAny"
           }
+        }
+      }
+    },
+    "v1CreateRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "v1CreateResponse": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "v1DeleteResponse": {
+      "type": "object"
+    },
+    "v1FetchResponse": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
         }
       }
     }

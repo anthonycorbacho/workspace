@@ -4,7 +4,7 @@
 // - protoc             (unknown)
 // source: sample/sampleapp/v1/sampleapp.proto
 
-package v1
+package sampleappv1
 
 import (
 	context "context"
@@ -40,7 +40,7 @@ func NewSampleAppClient(cc grpc.ClientConnInterface) SampleAppClient {
 
 func (c *sampleAppClient) Fetch(ctx context.Context, in *FetchRequest, opts ...grpc.CallOption) (*FetchResponse, error) {
 	out := new(FetchResponse)
-	err := c.cc.Invoke(ctx, "/SampleApp/Fetch", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/sample.sampleapp.v1.SampleApp/Fetch", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func (c *sampleAppClient) Fetch(ctx context.Context, in *FetchRequest, opts ...g
 
 func (c *sampleAppClient) Create(ctx context.Context, in *CreateRequest, opts ...grpc.CallOption) (*CreateResponse, error) {
 	out := new(CreateResponse)
-	err := c.cc.Invoke(ctx, "/SampleApp/Create", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/sample.sampleapp.v1.SampleApp/Create", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (c *sampleAppClient) Create(ctx context.Context, in *CreateRequest, opts ..
 
 func (c *sampleAppClient) Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error) {
 	out := new(DeleteResponse)
-	err := c.cc.Invoke(ctx, "/SampleApp/Delete", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/sample.sampleapp.v1.SampleApp/Delete", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func _SampleApp_Fetch_Handler(srv interface{}, ctx context.Context, dec func(int
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/SampleApp/Fetch",
+		FullMethod: "/sample.sampleapp.v1.SampleApp/Fetch",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SampleAppServer).Fetch(ctx, req.(*FetchRequest))
@@ -132,7 +132,7 @@ func _SampleApp_Create_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/SampleApp/Create",
+		FullMethod: "/sample.sampleapp.v1.SampleApp/Create",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SampleAppServer).Create(ctx, req.(*CreateRequest))
@@ -150,7 +150,7 @@ func _SampleApp_Delete_Handler(srv interface{}, ctx context.Context, dec func(in
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/SampleApp/Delete",
+		FullMethod: "/sample.sampleapp.v1.SampleApp/Delete",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SampleAppServer).Delete(ctx, req.(*DeleteRequest))
@@ -162,7 +162,7 @@ func _SampleApp_Delete_Handler(srv interface{}, ctx context.Context, dec func(in
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var SampleApp_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "SampleApp",
+	ServiceName: "sample.sampleapp.v1.SampleApp",
 	HandlerType: (*SampleAppServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

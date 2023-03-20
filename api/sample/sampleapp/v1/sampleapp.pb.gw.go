@@ -2,11 +2,11 @@
 // source: sample/sampleapp/v1/sampleapp.proto
 
 /*
-Package v1 is a reverse proxy.
+Package sampleappv1 is a reverse proxy.
 
 It translates gRPC into RESTful JSON APIs.
 */
-package v1
+package sampleappv1
 
 import (
 	"context"
@@ -181,7 +181,7 @@ func RegisterSampleAppHandlerServer(ctx context.Context, mux *runtime.ServeMux, 
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/.SampleApp/Fetch", runtime.WithHTTPPathPattern("/v1/users/{id}"))
+		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/sample.sampleapp.v1.SampleApp/Fetch", runtime.WithHTTPPathPattern("/v1/users/{id}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -204,7 +204,7 @@ func RegisterSampleAppHandlerServer(ctx context.Context, mux *runtime.ServeMux, 
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/.SampleApp/Create", runtime.WithHTTPPathPattern("/v1/users"))
+		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/sample.sampleapp.v1.SampleApp/Create", runtime.WithHTTPPathPattern("/v1/users"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -227,7 +227,7 @@ func RegisterSampleAppHandlerServer(ctx context.Context, mux *runtime.ServeMux, 
 		var stream runtime.ServerTransportStream
 		ctx = grpc.NewContextWithServerTransportStream(ctx, &stream)
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/.SampleApp/Delete", runtime.WithHTTPPathPattern("/v1/users/{id}"))
+		rctx, err := runtime.AnnotateIncomingContext(ctx, mux, req, "/sample.sampleapp.v1.SampleApp/Delete", runtime.WithHTTPPathPattern("/v1/users/{id}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -289,7 +289,7 @@ func RegisterSampleAppHandlerClient(ctx context.Context, mux *runtime.ServeMux, 
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/.SampleApp/Fetch", runtime.WithHTTPPathPattern("/v1/users/{id}"))
+		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/sample.sampleapp.v1.SampleApp/Fetch", runtime.WithHTTPPathPattern("/v1/users/{id}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -309,7 +309,7 @@ func RegisterSampleAppHandlerClient(ctx context.Context, mux *runtime.ServeMux, 
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/.SampleApp/Create", runtime.WithHTTPPathPattern("/v1/users"))
+		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/sample.sampleapp.v1.SampleApp/Create", runtime.WithHTTPPathPattern("/v1/users"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return
@@ -329,7 +329,7 @@ func RegisterSampleAppHandlerClient(ctx context.Context, mux *runtime.ServeMux, 
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
 		inboundMarshaler, outboundMarshaler := runtime.MarshalerForRequest(mux, req)
-		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/.SampleApp/Delete", runtime.WithHTTPPathPattern("/v1/users/{id}"))
+		rctx, err := runtime.AnnotateContext(ctx, mux, req, "/sample.sampleapp.v1.SampleApp/Delete", runtime.WithHTTPPathPattern("/v1/users/{id}"))
 		if err != nil {
 			runtime.HTTPError(ctx, mux, outboundMarshaler, w, req, err)
 			return

@@ -1,6 +1,7 @@
 syntax = "proto3";
 
-option go_package = "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1";
+package sample.sampleapp.v1;
+option go_package = "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1;sampleappv1";
 
 import "google/api/annotations.proto";
 import "validate/validate.proto";
