@@ -1,0 +1,11 @@
+persistence:
+  enabled: false
+serviceAccount:
+  create: true
+  name: tempo
+tempo:
+  searchEnabled: true
+  retention: 336h
+  storage:
+    trace:
+      backend: local

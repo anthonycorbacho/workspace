@@ -1,0 +1,10 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: ./charts # default location in Helm world
+    contents:
+      - path: pyroscope
+        helmChart:
+          name: pyroscope
+          repository:
+            url: https://pyroscope-io.github.io/helm-chart

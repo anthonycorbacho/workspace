@@ -1,0 +1,6 @@
+apiVersion: v2
+appVersion: 0.37.2
+description: A Helm chart for Pyroscope
+name: pyroscope
+type: application
+version: 0.2.92

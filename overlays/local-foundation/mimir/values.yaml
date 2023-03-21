@@ -1,0 +1,84 @@
+kubeVersionOverride: "1.25"
+
+resources: &resources
+  requests:
+  limits:
+
+mimir:
+  structuredConfig:
+    alertmanager_storage:
+      backend: "filesystem"
+    blocks_storage:
+      backend: "filesystem"
+    ruler_storage:
+      backend: "filesystem"
+
+minio:
+  enabled: false
+
+nginx:
+  ingress:
+    enabled: false
+
+alertmanager:
+  persistentVolume:
+    enabled: false
+
+compactor:
+  persistentVolume:
+    enabled: false
+
+ingester:
+  resources:
+    <<: *resources
+  persistentVolume:
+    enabled: false
+  zoneAwareReplication:
+    enabled: false
+
+store_gateway:
+  resources:
+    <<: *resources
+  persistentVolume:
+    enabled: false
+  zoneAwareReplication:
+    enabled: false
+
+chunks-cache:
+  enabled: true
+  allocatedMemory: 10
+  resources:
+    <<: *resources
+
+index-cache:
+  enabled: true
+  allocatedMemory: 30
+  resources:
+    <<: *resources
+
+metadata-cache:
+  enabled: true
+  allocatedMemory: 10
+  resources:
+    <<: *resources
+
+results-cache:
+  enabled: true
+  allocatedMemory: 10
+  resources:
+    <<: *resources
+
+querier:
+  resources:
+    <<: *resources
+
+query_frontend:
+  resources:
+    <<: *resources
+
+query_scheduler:
+  resources:
+    <<: *resources
+
+rollout_operator:
+  enabled: false

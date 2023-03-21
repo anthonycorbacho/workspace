@@ -1,0 +1,57 @@
+{{ template "chart.header" . }}
+
+{{ template "chart.versionBadge" . }}{{ template "chart.typeBadge" . }}{{ template "chart.appVersionBadge" . }}
+
+{{ template "chart.description" . }}
+
+{{ template "chart.sourcesSection" . }}
+
+{{ template "chart.requirementsSection" . }}
+
+
+## Get the Repo of Pyrscope
+
+```console
+
+helm repo add pyroscope-io https://pyroscope-io.github.io/helm-chart
+
+```
+
+
+## Installing the Chart
+
+
+To install the chart with the release name `my-release`:
+
+
+```console
+
+helm install my-release pyroscope-io/pyroscope
+
+```
+
+## Uninstalling the Chart
+
+To uninstall/delete the my-release deployment:
+
+```console
+
+helm delete my-release
+
+```
+
+## Persistence
+
+The official Pyroscope container image runs pyroscope server process with user ID `101`. The chart uses this value as
+default pod security context `fsGroup`. This includes all processes of the container to the supplemental group and makes
+kubelet to change the ownership of mounted volumes to this group (recursively; setgid bit is set).
+
+If you restrict pod security (for example, using `SecurityContextConstraints` or `PodSecurityPolicy`), you may need to
+override `fsGroup` with a value from the valid range.
+
+## Pyroscope configuration
+
+`pyroscopeConfigs` parameter may include any supported pyroscope server configuration option.
+Please refer to [the documentation](https://pyroscope.io/docs/server-configuration) for details.
+
+{{ template "chart.valuesSection" . }}

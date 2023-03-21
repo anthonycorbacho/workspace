@@ -1,0 +1,10 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: ./charts # default location in Helm world
+    contents:
+      - path: tempo
+        helmChart:
+          name: tempo
+          repository:
+            url: https://grafana.github.io/helm-charts
