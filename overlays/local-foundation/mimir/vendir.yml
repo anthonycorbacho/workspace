@@ -1,0 +1,10 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: ./charts # default location in Helm world
+    contents:
+      - path: mimir-distributed
+        helmChart:
+          name: mimir-distributed
+          repository:
+            url: https://grafana.github.io/helm-charts

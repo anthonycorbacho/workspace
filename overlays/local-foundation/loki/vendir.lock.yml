@@ -1,0 +1,9 @@
+apiVersion: vendir.k14s.io/v1alpha1
+directories:
+- contents:
+  - helmChart:
+      appVersion: 2.7.3
+      version: 4.8.0
+    path: loki
+  path: ./charts
+kind: LockConfig

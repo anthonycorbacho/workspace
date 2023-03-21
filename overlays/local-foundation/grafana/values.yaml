@@ -1,0 +1,24 @@
+testFramework:
+  enabled: false
+rbac:
+  pspEnabled: false
+persistence:
+  inMemory:
+    enabled: true
+sidecar:
+  dashboards:
+    enabled: true
+    searchNamespace: "ALL"
+  datasources:
+    enabled: true
+    #skipReload: true
+grafana.ini:
+  auth.basic:
+    enabled: false
+    disable_login_form: true
+  auth.anonymous:
+    enabled: true
+    org_name: "Main Org."
+    org_role: "Admin"
+  feature_toggles:
+    enable: "tempoSearch"
