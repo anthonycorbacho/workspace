@@ -1,0 +1,114 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: sampleapp
+  namespace: sample
+spec:
+  type: ClusterIP
+  selector:
+    app: sampleapp
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: sampleapp
+  annotations:
+    production-readiness: "false"
+    staging-readiness: "true"
+  name: sampleapp
+  namespace: sample
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sampleapp
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: sampleapp
+      annotations:
+        sidecar.istio.io/inject: "true"
+        prometheus.io.scrape: "true"
+        prometheus.io.path: "/metrics"
+        prometheus.io.port: "9090"
+        pyroscope.io/application-name: sample.sampleapp
+        pyroscope.io/port: "9091"
+        pyroscope.io/profile-cpu-enabled: "true"
+        pyroscope.io/profile-mem-enabled: "true"
+        pyroscope.io/scrape: "true"
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - image: local/sample/sampleapp
+          imagePullPolicy: IfNotPresent
+          name: sampleapp
+          env:
+            - name: OTL_ENDPOINT
+              value: grafana-agent-traces.monitoring.svc.cluster.local:4317
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metric
+              containerPort: 9090
+            - name: healthchecks
+              containerPort: 9091
+          resources:
+            limits:
+              cpu: 256m
+              memory: 128Mi
+            requests:
+              cpu: 128m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthchecks
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthchecks
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+      restartPolicy: Always
+      securityContext:
+        fsGroup: 2000
+        runAsGroup: 3000
+        runAsNonRoot: true
+        runAsUser: 1000
+      serviceAccountName: sample
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sampleapp
+  namespace: sample
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      name: sampleapp
