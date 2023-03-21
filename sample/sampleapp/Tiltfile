@@ -1,0 +1,15 @@
+load('ext://ko', 'ko_build')
+
+ko_build(
+    'local/sample/sampleapp',
+    './cmd/sampleapp',
+    deps = ['../../api/', '../../kit/', '../../vendor/', './', '../../go.mod', '../../go.sum'],
+)
+
+k8s_resource('sampleapp',
+    port_forwards=[
+        '8010:8080',  # sampleapp service endpoints
+        '8011:9090'   # sampleapp metrics endpoint
+    ],
+    labels=["sample"],
+)
