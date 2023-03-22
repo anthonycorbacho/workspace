@@ -22,3 +22,84 @@ grafana.ini:
     org_role: "Admin"
   feature_toggles:
     enable: "tempoSearch"
+
+plugins:
+  - pyroscope-datasource
+
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      version: 5
+      editable: true
+      orgId: 1
+      uid: prometheus
+      type: prometheus
+      basicAuth: false
+      isDefault: true
+      access: proxy
+      url: http://mimir-nginx.monitoring/prometheus
+      jsonData:
+        httpMethod: "POST"
+
+    - name: Loki
+      uid: loki
+      type: loki
+      version: 2
+      orgId: 1
+      editable: true
+      basicAuth: false
+      isDefault: false
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      jsonData:
+        derivedFields:
+          - matcherRegex: '"(?:TraceId)":"(\w+)"'
+            name: TraceId
+            url: "${__value.raw}"
+
+    - name: Tempo
+      uid: tempo
+      type: tempo
+      version: 2
+      orgId: 1
+      editable: true
+      basicAuth: false
+      isDefault: false
+      access: proxy
+      url: http://tempo.monitoring.svc.cluster.local:3100
+      jsonData:
+        lokiSearch:
+          datasourceUid: loki
+        nodeGraph:
+          enabled: true
+        serviceMap:
+          datasourceUid: prometheus
+        tlsSkipVerify: true
+        tracesToLogsV2:
+          customQuery: false
+          datasourceUid: loki
+          filterBySpanID: true
+          filterByTraceID: true
+          tags:
+            - key: cluster
+              value: ''
+            - key: namespace
+              value: ''
+            - key: pod
+              value: ''
+
+    - name: Pyroscope
+      version: 2
+      editable: true
+      orgId: 1
+      uid: pyroscope
+      type: pyroscope-datasource
+      basicAuth: false
+      isDefault: false
+      access: proxy
+      url: ''
+      jsonData:
+        path: http://pyroscope.monitoring:4040

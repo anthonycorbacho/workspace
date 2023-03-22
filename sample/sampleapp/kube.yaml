@@ -55,14 +55,12 @@ spec:
           name: sampleapp
           env:
             - name: OTL_ENDPOINT
-              value: grafana-agent-traces.monitoring.svc.cluster.local:4317
+              value: grafana-agent.monitoring.svc.cluster.local:4317
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
           ports:
-            - name: http
-              containerPort: 8080
             - name: metric
               containerPort: 9090
             - name: healthchecks

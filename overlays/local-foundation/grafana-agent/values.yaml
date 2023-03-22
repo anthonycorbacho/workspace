@@ -7,6 +7,12 @@ rbac:
   create: true
 
 agent:
+  extraPorts:
+    - targetPort: 4317
+      name: agent-otlp-grpc
+      port: 4317
+      protocol: TCP
+
   mounts:
     dockercontainers: true
   configMap:
@@ -337,8 +343,4 @@ agent:
             insecure_skip_verify = true
           }
         }
-      }
-
-      mimir.rules.kubernetes "default" {
-        address = "http://mimir-nginx.monitoring.svc.cluster.local"
       }
