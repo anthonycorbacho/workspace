@@ -29,45 +29,7 @@ agent:
       discovery.kubernetes "pods" {
         role = "pod"
       }
-  
-      discovery.relabel "configure_kubelet" {
-        targets = discovery.kubernetes.k8s_node.targets
 
-        rule {
-          replacement = "kubernetes.default.svc:443"
-          target_label = "__address__"
-        }
-
-        rule {
-          regex         = "(.+)"
-          replacement   = "/api/v1/nodes/$1/proxy/metrics"
-          source_labels = ["__meta_kubernetes_node_name"]
-          target_label  = "__metrics_path__"
-        }
-      }
-
-      discovery.relabel "configure_cadvisor" {
-        targets = discovery.kubernetes.k8s_node.targets
-        rule {
-          replacement  = "kubernetes.default.svc:443"
-          target_label = "__address__"
-        }
-
-        rule {
-          regex         = "(.+)"
-          replacement = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
-          source_labels = ["__meta_kubernetes_node_name"]
-          target_label  = "__metrics_path__"
-        }
-      }
-      
-      discovery.kubernetes "services" {
-        role = "service"
-      }
-      discovery.kubernetes "endpoints" {
-        role = "endpoints"
-      }
-    
       discovery.relabel "node_pods" {
         targets = discovery.kubernetes.pods.targets
         // Only keep targets which are on the same node as the agent.
@@ -132,6 +94,7 @@ agent:
           action = "replace"
         }
       }
+      
       discovery.relabel "pods" {
         targets = discovery.relabel.node_pods.output
           rule {
@@ -158,7 +121,7 @@ agent:
             // less bizarre.
             regex = ";*([^;]+);*.*"
           }
-          
+
           rule {
             source_labels = ["__meta_kubernetes_pod_node_name"]
             target_label  = "__host__"
@@ -190,6 +153,7 @@ agent:
             replacement  = "/var/log/pods/*/*.log"
           }
       }
+
       discovery.file "pods" {
         path_targets = discovery.relabel.pods.output
       }
@@ -198,125 +162,14 @@ agent:
         targets    = discovery.relabel.pods.output
         forward_to = [loki.write.default.receiver]
       }
-          
+
       loki.write "default" {
         endpoint {
           name = "default"
           url = "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
         }
       }
-    
-      prometheus.exporter.unix {
-      }
-    
-      prometheus.scrape "node_exporter" {
-        targets    = prometheus.exporter.unix.targets
-        forward_to = [ prometheus.remote_write.default.receiver ]
-      }
-    
-      prometheus.scrape "service_endpoints" {
-        targets    = discovery.kubernetes.endpoints.targets
-        forward_to = [prometheus.remote_write.default.receiver]
-      }
-    
-      prometheus.scrape "pods" {
-        targets    = discovery.file.pods.targets
-        forward_to = [prometheus.relabel.pods.receiver]
-      }
-    
-      prometheus.relabel "pods" {
-        forward_to = [prometheus.remote_write.default.receiver]
-        rule {
-          separator = ";"
-          regex = "__meta_kubernetes_pod_label_(.+)"
-          replacement = "$1"
-          action = "labelmap"
-        }
-        rule {
-          source_labels = ["__meta_kubernetes_namespace"]
-          separator = ";"
-          regex = "(.*)"
-          target_label = "namespace"
-          replacement = "$1"
-          action = "replace"
-        }
-        rule {
-          source_labels = ["__meta_kubernetes_pod_name"]
-          separator = ";"
-          regex = "(.*)"
-          target_label = "pod_name"
-          replacement = "$1"
-          action = "replace"
-        }
-        rule {
-          separator = ";"
-          regex = "instance"
-          replacement = "$1"
-          action = "labeldrop"
-        }
-        rule {
-          separator = ";"
-          regex = "pod_template_hash"
-          replacement = "$1"
-          action = "labeldrop"
-        }
-      }
-  
-      prometheus.scrape "cadvisor" {
-        targets    = discovery.relabel.configure_cadvisor.output
-        forward_to = [prometheus.relabel.cadvisor.receiver]
-        scrape_interval = "15s"
-        scrape_timeout = "10s"
-        metrics_path = "/metrics"
-        scheme = "https"
-        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        tls_config {
-          ca_file              = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-          insecure_skip_verify = false
-          server_name          = "kubernetes"
-        }
-      }
-    
-      prometheus.relabel "cadvisor" {
-        forward_to = [prometheus.remote_write.default.receiver]
-        rule {
-          separator = ";"
-          regex = "(.*)"
-          target_label = "__address__"
-          replacement = "kubernetes.default.svc.cluster.local:443"
-          action = "replace"
-        }
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          separator = ";"
-          regex = "(.+)"
-          target_label = "__metrics_path__"
-          replacement = "/api/v1/nodes/${1}/proxy/metrics/cadvisor"
-          action = "replace"
-        }
         
-        rule {
-          source_labels = ["cluster"]
-          regex = ""
-          target_label = "cluster"
-          replacement = "k8s-cluster"
-          action = "replace"
-        }
-        rule {
-          source_labels = ["pod"]
-          separator = ";"
-          regex = "(.*)"
-          replacement = "/api/v1/nodes/${1}/proxy/metrics/cadvisor"
-          action = "keep"
-        }
-      }
-    
-      prometheus.remote_write "default" {
-        endpoint {
-          url  = "http://mimir-nginx.monitoring.svc.cluster.local/api/v1/push"
-        }
-      }
-      
       otelcol.receiver.otlp "default" {
         grpc {}
         http {}
