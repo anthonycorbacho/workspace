@@ -58,8 +58,7 @@ datasources:
           - datasourceUid: tempo
             matcherRegex: '"(?:TraceId)":"(\w+)"'
             name: TraceId
-            url: "${__value.raw}"
-            urlDisplayLabel: ''
+            url: '$${__value.raw}'
 
     - name: Tempo
       uid: tempo
