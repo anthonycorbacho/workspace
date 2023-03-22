@@ -6,8 +6,10 @@ commonAnnotations:
 
 resources:
   - namespace
+  - grafana-agent
   - loki
   - grafana
   - tempo
-  - mimir
+  # - mimir - deactivated until confident.
+  - prometheus
   - pyroscope
