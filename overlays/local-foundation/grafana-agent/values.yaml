@@ -1,0 +1,344 @@
+controller:
+  securityContext:
+    privileged: true
+    runAsUser: 0
+
+rbac:
+  create: true
+
+agent:
+  mounts:
+    dockercontainers: true
+  configMap:
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+  
+      discovery.kubernetes "k8s_node" {
+        role = "node"
+      }
+  
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+  
+      discovery.relabel "configure_kubelet" {
+        targets = discovery.kubernetes.k8s_node.targets
+
+        rule {
+          replacement = "kubernetes.default.svc:443"
+          target_label = "__address__"
+        }
+
+        rule {
+          regex         = "(.+)"
+          replacement   = "/api/v1/nodes/$1/proxy/metrics"
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "__metrics_path__"
+        }
+      }
+
+      discovery.relabel "configure_cadvisor" {
+        targets = discovery.kubernetes.k8s_node.targets
+        rule {
+          replacement  = "kubernetes.default.svc:443"
+          target_label = "__address__"
+        }
+
+        rule {
+          regex         = "(.+)"
+          replacement = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "__metrics_path__"
+        }
+      }
+      
+      discovery.kubernetes "services" {
+        role = "service"
+      }
+      discovery.kubernetes "endpoints" {
+        role = "endpoints"
+      }
+    
+      discovery.relabel "node_pods" {
+        targets = discovery.kubernetes.pods.targets
+        // Only keep targets which are on the same node as the agent.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          regex         = env("HOSTNAME")
+          action        = "keep"
+        }
+      
+        rule {
+          separator = ";"
+          regex = "__meta_kubernetes_pod_label_(.+)"
+          replacement = "$1"
+          action = "labelmap"
+        }
+        
+        rule {
+          source_labels = ["cluster"]
+          
+          regex = "null"
+          target_label = "cluster"
+          replacement = "k8s-cluster"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          separator = ";"
+          regex = "(.*)"
+          target_label = "namespace"
+          replacement = "$1"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          separator = ";"
+          regex = "(.*)"
+          target_label = "pod"
+          replacement = "$1"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          separator = ";"
+          regex = "(.*)"
+          target_label = "container"
+          replacement = "$1"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_name", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+          regex = "(.*)"
+          target_label = "__tmp_component_name"
+          replacement = "$1"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace", "__tmp_component_name"]
+          separator = "/"
+          regex = "(.*)"
+          target_label = "job"
+          replacement = "$1"
+          action = "replace"
+        }
+      }
+      discovery.relabel "pods" {
+        targets = discovery.relabel.node_pods.output
+          rule {
+            // Try to identify a service name to eventually form the job label. We'll
+            // prefer the first of the below labels, in descending order.
+            source_labels = [
+              "__meta_kubernetes_pod_label_k8s_app",
+              "__meta_kubernetes_pod_label_app",
+              "__meta_kubernetes_pod_label_name",
+              "__meta_kubernetes_pod_controller_name",
+              "__meta_kubernetes_pod_name",
+            ]
+            target_label = "__service__"
+            // Our in-memory string will be something like A;B;C;D;E, where any of the
+            // letters could be replaced with a label value or be empty if the label
+            // value did not exist.
+            //
+            // We want to match for the very first sequence of non-semicolon characters
+            // which is either prefaced by zero or more semicolons, and is followed by
+            // zero or more semicolons before the rest of the string.
+            //
+            // This is a very annoying way of being able to do conditionals, and
+            // ideally we can use River expressions in the future to make this much
+            // less bizarre.
+            regex = ";*([^;]+);*.*"
+          }
+          
+          rule {
+            source_labels = ["__meta_kubernetes_pod_node_name"]
+            target_label  = "__host__"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_namespace", "__service__",]
+            target_label = "job"
+            separator   = "/"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_namespace"]
+            target_label  = "namespace"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_name"]
+            target_label  = "pod"
+          }
+          rule {
+            source_labels = ["__meta_kubernetes_pod_container_name"]
+            target_label  = "container"
+          }
+          rule {
+            source_labels = [
+              "__meta_kubernetes_pod_uid",
+              "__meta_kubernetes_pod_container_name",
+            ]
+            target_label = "__path__"
+            separator    = "/"
+            replacement  = "/var/log/pods/*/*.log"
+          }
+      }
+      discovery.file "pods" {
+        path_targets = discovery.relabel.pods.output
+      }
+    
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.write.default.receiver]
+      }
+          
+      loki.write "default" {
+        endpoint {
+          name = "default"
+          url = "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
+        }
+      }
+    
+      prometheus.exporter.unix {
+      }
+    
+      prometheus.scrape "node_exporter" {
+        targets    = prometheus.exporter.unix.targets
+        forward_to = [ prometheus.remote_write.default.receiver ]
+      }
+    
+      prometheus.scrape "service_endpoints" {
+        targets    = discovery.kubernetes.endpoints.targets
+        forward_to = [prometheus.remote_write.default.receiver]
+      }
+    
+      prometheus.scrape "pods" {
+        targets    = discovery.file.pods.targets
+        forward_to = [prometheus.relabel.pods.receiver]
+      }
+    
+      prometheus.relabel "pods" {
+        forward_to = [prometheus.remote_write.default.receiver]
+        rule {
+          separator = ";"
+          regex = "__meta_kubernetes_pod_label_(.+)"
+          replacement = "$1"
+          action = "labelmap"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          separator = ";"
+          regex = "(.*)"
+          target_label = "namespace"
+          replacement = "$1"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          separator = ";"
+          regex = "(.*)"
+          target_label = "pod_name"
+          replacement = "$1"
+          action = "replace"
+        }
+        rule {
+          separator = ";"
+          regex = "instance"
+          replacement = "$1"
+          action = "labeldrop"
+        }
+        rule {
+          separator = ";"
+          regex = "pod_template_hash"
+          replacement = "$1"
+          action = "labeldrop"
+        }
+      }
+  
+      prometheus.scrape "cadvisor" {
+        targets    = discovery.relabel.configure_cadvisor.output
+        forward_to = [prometheus.relabel.cadvisor.receiver]
+        scrape_interval = "15s"
+        scrape_timeout = "10s"
+        metrics_path = "/metrics"
+        scheme = "https"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        tls_config {
+          ca_file              = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          insecure_skip_verify = false
+          server_name          = "kubernetes"
+        }
+      }
+    
+      prometheus.relabel "cadvisor" {
+        forward_to = [prometheus.remote_write.default.receiver]
+        rule {
+          separator = ";"
+          regex = "(.*)"
+          target_label = "__address__"
+          replacement = "kubernetes.default.svc.cluster.local:443"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          separator = ";"
+          regex = "(.+)"
+          target_label = "__metrics_path__"
+          replacement = "/api/v1/nodes/${1}/proxy/metrics/cadvisor"
+          action = "replace"
+        }
+        
+        rule {
+          source_labels = ["cluster"]
+          regex = ""
+          target_label = "cluster"
+          replacement = "k8s-cluster"
+          action = "replace"
+        }
+        rule {
+          source_labels = ["pod"]
+          separator = ";"
+          regex = "(.*)"
+          replacement = "/api/v1/nodes/${1}/proxy/metrics/cadvisor"
+          action = "keep"
+        }
+      }
+    
+      prometheus.remote_write "default" {
+        endpoint {
+          url  = "http://mimir-nginx.monitoring.svc.cluster.local/api/v1/push"
+        }
+      }
+      
+      otelcol.receiver.otlp "default" {
+        grpc {}
+        http {}
+        output {
+            metrics = [otelcol.processor.batch.default.input]
+            logs    = [otelcol.processor.batch.default.input]
+            traces  = [otelcol.processor.batch.default.input]
+        }
+      }
+
+      otelcol.processor.batch "default" {
+        output {
+          metrics = [otelcol.exporter.otlp.default.input]
+          logs    = [otelcol.exporter.otlp.default.input]
+          traces  = [otelcol.exporter.otlp.default.input]
+        }
+      }
+
+      otelcol.exporter.otlp "default" {
+        client {
+          endpoint = "http://tempo.monitoring.svc.cluster.local:4317"
+          tls {
+            insecure             = true
+            insecure_skip_verify = true
+          }
+        }
+      }
+
+      mimir.rules.kubernetes "default" {
+        address = "http://mimir-nginx.monitoring.svc.cluster.local"
+      }

@@ -23,6 +23,7 @@ k8s_yaml(kustomize('overlays/local-foundation'))
 k8s_resource('loki', labels=["monitoring"])
 k8s_resource('loki-gateway', labels=["monitoring"])
 k8s_resource('grafana', port_forwards='8090:3000', labels=["monitoring"])
+k8s_resource('grafana-agent', port_forwards='8091:80', labels=["monitoring"])
 k8s_resource('tempo', labels=["monitoring"])
 k8s_resource('tempo', labels=["monitoring"])
 k8s_resource('mimir-query-frontend', labels=["monitoring"])
@@ -46,10 +47,9 @@ k8s_resource('mimir-smoke-test', labels=["monitoring"])
 k8s_resource('pyroscope', labels=["monitoring"])
 
 
-
 # Load microservices
 # Local overlays will contain all microservices built with workspace.
-# k8s_yaml(kustomize('overlays/local'))
+k8s_yaml(kustomize('overlays/local'))
 
 # sample namespace
-# include('./sample/sampleapp/Tiltfile')
+include('./sample/sampleapp/Tiltfile')
