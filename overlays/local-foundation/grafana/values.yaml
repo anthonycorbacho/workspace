@@ -39,7 +39,7 @@ datasources:
       basicAuth: false
       isDefault: true
       access: proxy
-      url: http://mimir-nginx.monitoring/prometheus
+      url: http://prometheus.monitoring.svc.cluster.local:9090
       jsonData:
         httpMethod: "POST"
 
