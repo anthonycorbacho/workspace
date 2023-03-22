@@ -18,9 +18,6 @@ kind: Deployment
 metadata:
   labels:
     app: sampleapp
-  annotations:
-    production-readiness: "false"
-    staging-readiness: "true"
   name: sampleapp
   namespace: sample
 spec:

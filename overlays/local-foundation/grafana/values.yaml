@@ -26,7 +26,6 @@ grafana.ini:
 plugins:
   - pyroscope-datasource
 
-
 datasources:
   datasources.yaml:
     apiVersion: 1
@@ -56,9 +55,11 @@ datasources:
       url: http://loki.monitoring.svc.cluster.local:3100
       jsonData:
         derivedFields:
-          - matcherRegex: '"(?:TraceId)":"(\w+)"'
+          - datasourceUid: tempo
+            matcherRegex: '"(?:TraceId)":"(\w+)"'
             name: TraceId
             url: "${__value.raw}"
+            urlDisplayLabel: ''
 
     - name: Tempo
       uid: tempo
