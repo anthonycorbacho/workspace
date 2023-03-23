@@ -10,7 +10,7 @@ It also comes with a set a tools for managing and working with the infrastructur
 ## Contents
 - [Why?](#why)
 - [Requirements](#requirements)
-- [Installation](#installation)
+- [Installation](#installation-and-usage)
 - [CI/CD](#cicd)
 
 ## Why?
