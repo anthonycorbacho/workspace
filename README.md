@@ -9,6 +9,7 @@ It also comes with a set a tools for managing and working with the infrastructur
 
 ## Contents
 - [Why?](#why)
+- [Documentation](#documentation)
 - [Requirements](#requirements)
 - [Installation](#installation-and-usage)
 - [CI/CD](#cicd)
@@ -64,6 +65,9 @@ cloud-workspace/
 Workspace is built with observability at heat. Kit integrate with OpenTelemetry and local overlays set up the basic Loki, Grafana, Tempo, Prometheus stack.
 All tracing, login and monitoring endpoint and setting are preset via Kit framework.
 
+## Documentation
+In order to have more context on the decision and guidelines, you can refer to the [documentation folder](sdlc/documentation/README.md).
+
 ## Requirements
 You need to have Go installed in your system.
 The minimal version of Go is `1.20`
@@ -91,7 +95,7 @@ git clone git@github.com:anthonycorbacho/workspace.git
 tilt up
 ```
 
-Workspace comes with a [simple app](https://github.com/anthonycorbacho/workspace/tree/main/sample/sampleapp) that illustrate how to use this framework.
+Workspace comes with a [simple app](sample/sampleapp) that illustrate how to use this framework.
 
 ### Accessible Dashboard
  - Tilt dashboard http://localhost:10350/
