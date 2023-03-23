@@ -1,29 +1,31 @@
 # Workspace
+[![Go Report Card](https://goreportcard.com/badge/github.com/anthonycorbacho/workspace)](https://goreportcard.com/report/github.com/anthonycorbacho/workspace)
+[![go.mod Go version](https://img.shields.io/github/go-mod/go-version/anthonycorbacho/workspace)](https://github.com/anthonycorbacho/workspace)
 
-**Workspace** is a Monorepo template that will help you to define and work with Go cloud native application.
+**Workspace** is a Mono-repository template for building and deploying distributed applications.
 
-It was created to scratch my itch while working with hundreds of different repositories. Workspace aim to unify and structure your Go applications and deployment model.
-It comes with a `Kit` framework for Go application that is a boilerplate templating for production ready application out of the box.
+Workspace aim to unify and structure your Go applications and deployment model. It comes with a Kit framework for production ready Go application.
+It also comes with a set a tools for managing and working with the infrastructure, the base model relies on Kubernetes via Kustomize and overlays. Workspace can run on your laptop for ease of development and can be deployed to any cloud providers.
 
 ## Contents
 - [Why?](#why)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [CI/CD](#cicd)
-- [Tooling](#tooling)
 
 ## Why?
-Mono repo is a model that aims to group a set of services into a single repository, by doing so we can have this benefit “out of the box”;
+Mono repo is a model that aims to group a set of services, tool, and deployment into a single repository, by doing so you can have this benefit “out of the box”;
 
- - Unify versioning, one source of truth 
- - Extensive code sharing and reuse 
- - Simplified dependency management 
- - Atomic change 
- - Large-scale refactoring. codebase modernization 
- - Collaboration across teams 
- - Flexible team boundaries and code ownership 
- - Code visibility and clear tree structure providing implicit team namespacing 
+ - Unify versioning, one source of truth
+ - Atomic change
+ - Unified deployment model for all applications
  - Enforced tooling (linter, build, code search, etc)
+ - Extensive code sharing and reuse
+ - Simplified dependency management
+ - Large-scale refactoring. codebase modernization
+ - Collaboration across teams
+ - Flexible team boundaries and code ownership
+ - Code visibility and clear tree structure providing implicit team namespacing
 
 ### The Model
 The proposed approach for this mono repo architecture is to follow the `namespace your applications per domain` strategy.
@@ -58,6 +60,10 @@ cloud-workspace/
 └── tools.go
 ```
 
+### Observability
+Workspace is built with observability at heat. Kit integrate with OpenTelemetry and local overlays set up the basic Loki, Grafana, Tempo, Prometheus stack.
+All tracing, login and monitoring endpoint and setting are preset via Kit framework.
+
 ## Requirements
 You need to have Go installed in your system.
 The minimal version of Go is `1.20`
@@ -67,24 +73,25 @@ You can run `make onboarding` to see if you have required tools missing.
 - [Rancher-desktop](https://docs.rancherdesktop.io/getting-started/installation/)
 - [Tilt](https://tilt.dev/)
 - [Go](https://go.dev/dl/)
+- [ko](https://github.com/google/ko) `brew install ko` for tilt go container image
 - [Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/)
 - [Buf](https://docs.buf.build/installation) and [Generate code](https://docs.buf.build/tour/generate-go-code)
 - [golangci-lint](https://github.com/golangci/golangci-lint) `brew install golangci-lint`
 - [kubeseal](https://github.com/bitnami-labs/sealed-secrets) `brew install kubeseal`
 - [mockery](https://github.com/vektra/mockery) `brew install mockery`
-- [ko](https://github.com/google/ko) `brew install ko` for tilt go container image
 
-## Installation
-
-This workspace is build using ko, Tilt and Go modules. Here is the exhaustive list that we will mainly use.
+## Installation and usage
+This workspace is built using ko, Tilt and Go modules.
 
 ```bash
-# First clone the repository
+# First fork or clone the repository
 git clone git@github.com:anthonycorbacho/workspace.git
 
-# From there you can run all the projects with:
+# you can run the whole project on your local kubernetes (via docker desktop or rancher desktop)
 tilt up
 ```
+
+Workspace comes with a [simple app](https://github.com/anthonycorbacho/workspace/tree/main/sample/sampleapp) that illustrate how to use this framework.
 
 ### Accessible Dashboard
  - Tilt dashboard http://localhost:10350/
@@ -94,16 +101,3 @@ tilt up
 
 TBD
 
-## Tooling
-Makefile that will help you to trigger/run some actions
-
-```bash
-$ make help
-linter:			 Run linter
-proto-gen:		 Generate Go code (pb, grpc and grpc-gateway) of our api
-test:			 Run unit test (without integration tests)
-bench:			 Run go benchmarks
-onboarding:      Install tools for the project
-codegen:		 install the codegen: `make codegen && codegen`
-help:			 Show this help
-```
