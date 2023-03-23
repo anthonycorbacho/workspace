@@ -102,6 +102,15 @@ Workspace comes with a [simple app](sample/sampleapp) that illustrate how to use
  - Grafana dashboard http://localhost:8090/?orgId=1
 
 ## CI/CD
+GitHub Actions are used to check codestyle via golangci (you can check golangci.yml for more details).
 
-TBD
+### CI
+We are using GitHub actions for building our OCI images and push it to the repository (staging or production repository).
+The pipeline is trigger once a Pull Request is merged into the main branch.
 
+By default, the push will happen on the default GitHub Package. You can choose to override where you want your image to be pushed.
+
+### CD
+It is strongly recommended to set up ArgoCD for managing the deployment.
+
+TODO: document/argoCD 
