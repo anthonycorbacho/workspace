@@ -10,10 +10,10 @@ The package strategy that we use for the projects involves 4 simple tenets:
 
 These rules help isolate the packages and define a clear domain language across the entire application. An example/demo implementation can be found [here](https://github.com/anthonycorbacho/workspace/tree/main/sample/sampleapp).
 
-* [Root package is for domain types](#GoApplicationLayout-#1.Rootpackageisfordomaintypes)
-* [ Group subpackages by dependency](#GoApplicationLayout-#2.Groupsubpackagesbydependency)
-* [Use a shared mock subpackage](#GoApplicationLayout-#3.Useasharedmocksubpackage)
-* [Main package ties together dependencies](#GoApplicationLayout-#4.Mainpackagetiestogetherdependencies)
+* [Root package is for domain types](#root-package-is-for-domain-types)
+* [Group subpackages by dependency](#group-subpackages-by-dependency)
+* [Use a shared mock subpackage](#use-a-shared-mock-subpackage)
+* [Main package ties together dependencies](#main-package-ties-together-dependencies)
 
 ## Root package is for domain types
 The application has a logical, high-level language that describes how data and processes interact. This is the domain. If we have an e-commerce application the domain involves things like customers, accounts, charging credit cards, and handling inventory. If we are Facebook then the domain is users, likes, & relationships. It is the stuff that doesn't depend on the underlying technology.
