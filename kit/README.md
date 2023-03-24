@@ -45,3 +45,43 @@ func main() {
 	}
 }
 ```
+
+### Add gRPC service and gRPC gateway
+Foundation comes with integration with GRPC (GRPC gateway) out of the box.
+You can define your protobuf API in [api folder](../api).
+Once you generated the code via `make proto-gen`, you can start creating your application as shown below:
+
+```go
+func main() {
+	// Initialise the foundation
+	foundation, err := kit.NewFoundation("myservice")
+	if err != nil { 
+		// handle error 
+	}
+  
+	// Register the GRPC Server
+	foundation.RegisterService(func(s *grpc.Server) {
+    	// since in a closure, you only need to pass a RegisterServiceFunc
+    	// with the proto Register App and the struct that implement the interfaces
+    	// the underline implementation and setup of the GRPC server
+    	// will be managed by the foundation.
+		pb.RegisterMyAppServer(s, &myStruct{})
+	})
+  
+	// Register the Service Handler in case you want to expose your GRPC service via HTTP
+	// it use underneath grpc-gateway.
+	// like RegisterService, RegisterServiceHandler takes a RegisterServiceHandlerFunc
+	// with the proto Register App Handler and the underline implementation and setup
+	// will be managed by the foundation.
+	foundation.RegisterServiceHandler(func(gw *runtime.ServeMux, conn *grpc.ClientConn) {
+		if err := pb.RegisterMyAppHandler(ctx, gw, conn); err != nil {
+			// handle error
+		}
+	})
+  
+  	// Start the service
+  	if err := foundation.Serve(); err != nil {
+		// handle error
+  	}
+}
+```
