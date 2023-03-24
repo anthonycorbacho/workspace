@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
@@ -21,16 +22,13 @@ var _ pubsub.Subscriber = (*Subscriber)(nil)
 // The following features are available our of the box:
 // - automatic reconnection: https://docs.nats.io/using-nats/developer/connecting/reconnect
 type Subscriber struct {
-	// As we are likely to use the `Push + queue group` scenario
-	// this design implies that a subscriber corresponds to a unique queue group
-	// but may have multiple subscriptions
+	closing    chan struct{}
+	closed     bool
+	closedLock sync.Mutex
 	queueGroup string
-	// A consumer could be created by the action of subscribing,
-	// but draining that subscription would also remove the consumer.
-	// So for more control, it's better to create Consumers independently
-	consumer *nats.ConsumerInfo
-	nc       *nats.Conn
-	js       nats.JetStreamContext
+	consumer   *nats.ConsumerInfo
+	nc         *nats.Conn
+	js         nats.JetStreamContext
 }
 
 // NewSubscriber creates a new Nats Subscriber.
@@ -51,6 +49,9 @@ func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.J
 	}
 
 	return &Subscriber{
+		closing:    make(chan struct{}, 1),
+		closed:     false,
+		closedLock: sync.Mutex{},
 		queueGroup: queueGroup,
 		nc:         natsClient,
 		js:         jetStreamCtx,
@@ -63,6 +64,12 @@ func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.J
 // It is caller's responsibility to configure client's connection's `DrainTimeout` and `ClosedHandler` (with WaitGroup)
 // https://docs.nats.io/using-nats/developer/receiving/drain
 func (s *Subscriber) Close() error {
+	if s.isClosed() {
+		return nil
+	}
+	s.setClosed(true)
+	close(s.closing)
+
 	if s.nc.IsClosed() {
 		return pubsub.SubscriberCLosed
 	}
@@ -72,7 +79,6 @@ func (s *Subscriber) Close() error {
 // Subscribe consumes NATS Pub/Sub.
 //
 // NATS has two types of subscription: Pull and Push.
-// ADA use-case seems to fit the `Push + queue group` scenario, which is why here we `QueueSubscribe“
 //
 // Read more about it https://docs.nats.io/reference/faq#what-is-the-right-kind-of-stream-consumer-to-use
 //
@@ -80,6 +86,16 @@ func (s *Subscriber) Close() error {
 // Depending on the Consumer `DeliverPolicy`, `all`, `last`, `new`, `by_start_time`, `by_start_sequence`
 // persisted messages can be received
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subject */, handler pubsub.Handler) error {
+	h := func(ctx context.Context, msg pubsub.Message, ack func(), nack func()) error {
+		// default behavior is to always ack.
+		ack()
+		return handler(ctx, msg)
+	}
+
+	return s.SubscribeWithAck(ctx, subscription, h)
+}
+
+func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
 	if s.nc.IsClosed() {
 		return fmt.Errorf("subscriber is closed")
 	}
@@ -87,22 +103,37 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subje
 		return fmt.Errorf("subscription is nil")
 	}
 
-	// exponential Backoff needed?
-	_, err := s.js.QueueSubscribe(subscription /* subject */, s.queueGroup, func(msg *nats.Msg) {
-		go s.receive(ctx, msg, handler)
-	}, nats.Bind(s.consumer.Stream, s.consumer.Name))
+	subHandler := func(msg *nats.Msg) {
+		s.receive(ctx, msg, handler)
+	}
+
+	_, err := s.js.QueueSubscribe(
+		subscription, /* subject */
+		s.queueGroup,
+		subHandler,
+		nats.Bind(s.consumer.Stream, s.consumer.Name),
+		nats.ManualAck())
 	if err != nil {
+
 		return fmt.Errorf("subscription init failed: %v", err)
 	}
 
 	return nil
 }
 
-func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
-	return errors.New("not implemented")
-}
+func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.HandlerWithAck) {
 
-func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.Handler) {
+	select {
+	case <-s.closing:
+		msg.Nak()
+		return
+	case <-ctx.Done():
+		msg.Nak()
+		return
+	default:
+		// no-oop: responsibility of the caller
+	}
+
 	// recreate the context with traces
 	firstHeaders := make(map[string]string)
 	for k, v := range msg.Header {
@@ -119,10 +150,32 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 	span.SetAttributes(attribute.String("topic", msg.Subject))
 	defer span.End()
 
+	ack := func() {
+		msg.Ack()
+	}
+	nack := func() {
+		msg.Nak()
+	}
+
 	// Process the message
 	// in case of error, we record and label the error in the span.
-	if err := handler(ctx, msg.Data); err != nil {
+	err := handler(ctx, msg.Data, ack, nack)
+	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
+}
+
+func (s *Subscriber) setClosed(value bool) {
+	s.closedLock.Lock()
+	defer s.closedLock.Unlock()
+
+	s.closed = value
+}
+
+func (s *Subscriber) isClosed() bool {
+	s.closedLock.Lock()
+	defer s.closedLock.Unlock()
+
+	return s.closed
 }
