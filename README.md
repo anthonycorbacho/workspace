@@ -4,7 +4,7 @@
 
 **Workspace** is a Mono-repository template for building and deploying distributed applications.
 
-Workspace aim to unify and structure your Go applications and deployment model. It comes with a [Kit framework](kit/README.md) for production ready Go application.
+Workspace aim to unify and structure your Go applications and deployment model. It comes with a [Kit framework](kit) for production ready Go application.
 It also comes with a set a tools for managing and working with the infrastructure, the base model relies on Kubernetes via Kustomize and overlays. Workspace can run on your laptop for ease of development and can be deployed to any cloud providers.
 
 ## Contents
