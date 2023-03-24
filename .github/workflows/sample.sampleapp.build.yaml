@@ -1,0 +1,15 @@
+name: sample/sampleapp Build and Push
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sample/sampleapp/**/*.go"
+      - "kit/**/*.go"
+jobs:
+  # Build the image of the service and push it
+  build-and-push:
+    uses: anthonycorbacho/workspace/.github/workflows/ko-builder.yaml@main
+    with:
+      service: sampleapp
+      namespace: sample

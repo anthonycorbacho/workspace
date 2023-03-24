@@ -1,0 +1,43 @@
+name: Ko Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        required: true
+        description: "Service to build"
+        type: "string"
+      namespace:
+        required: true
+        description: "Namespace of the service"
+        type: "string"
+
+env:
+  REGISTRY: ghcr.io
+  NAMESPACE: ${{ github.repository_owner }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@7884fcad6b5d53d10323aee724dc68d8b9096a2e
+      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f
+        with:
+          go-version: 1.20
+      - uses: imjasonh/setup-ko@main
+        with:
+          version: v0.12.0
+      - name: Build the image
+        env:
+          KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ inputs.namespace }}/${{ inputs.service }}
+          KO_USER: ${{ github.actor }}
+          KO_PASSWORD: ${{ github.token }}
+          GIT_REF: ${{ github.ref }}
+          BINARY: ${{ inputs.service }}
+        run: |
+          SBOM=cyclonedx
+          ko build --bare --sbom=$SBOM --image-refs=ko.images ./${{ inputs.namespace }}/${{ inputs.service }}/cmd/${{ inputs.service }}
