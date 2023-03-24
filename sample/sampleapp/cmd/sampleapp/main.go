@@ -47,7 +47,7 @@ func main() {
 		pb.RegisterSampleAppServer(s, srv)
 	})
 
-	// Register the Service Handler
+	// Register the Service Handler.
 	foundation.RegisterServiceHandler(func(gw *runtime.ServeMux, conn *grpc.ClientConn) {
 		if err := pb.RegisterSampleAppHandler(ctx, gw, conn); err != nil {
 			l.Fatal(ctx, "fail registering gateway handler", log.Error(err))
