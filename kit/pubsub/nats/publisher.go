@@ -13,8 +13,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+var _ pubsub.Publisher = (*Publisher)(nil)
+
 // Publisher publishes a message on a NATS JetStream Stream's Pub/Sub topic.
-// We don't use NATS core but JetStream as our use cases require persistence and better quality of service.
+//
 // Subjects (topics) are managed by the server automatically following presence/absence of subscriptions
 // https://docs.nats.io/reference/faq#how-do-i-create-subjects
 //
@@ -24,7 +26,7 @@ type Publisher struct {
 	js nats.JetStreamContext
 }
 
-// NewPublisher create a new GCP publisher.
+// NewPublisher create a new Nats JetStream publisher.
 //
 // It required a call to Close in order to stop processing messages and close topic connections.
 func NewPublisher(nc *nats.Conn, js nats.JetStreamContext) (*Publisher, error) {

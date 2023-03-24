@@ -129,12 +129,12 @@ func (c *Cache) Set(ctx context.Context, key string, value interface{}, expirati
 	}
 
 	if value == nil {
-		return errors.Wrap(cache.ErrValueInvalid, "value should not be nil when putting to cache")
+		return cache.ErrValueInvalid
 	}
 
 	b, err := cache.Marshal(value)
 	if err != nil {
-		return errors.Wrapf(err, "saving value to cache for key '%s'", key)
+		return errors.Wrapf(err, "marshalling value for key '%s'", key)
 	}
 
 	if err := c.client.Set(ctx, key, b, expiration).Err(); err != nil {
