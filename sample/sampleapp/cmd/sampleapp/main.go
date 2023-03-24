@@ -42,7 +42,7 @@ func main() {
 		l.Fatal(ctx, err.Error())
 	}
 
-	// Register the GRPC Server
+	// Register the GRPC Server.
 	foundation.RegisterService(func(s *grpc.Server) {
 		pb.RegisterSampleAppServer(s, srv)
 	})
