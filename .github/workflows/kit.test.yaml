@@ -6,7 +6,10 @@ on:
       - "kit/**/*.go"
 
 env:
+  TESTINGDB_URL: postgresql://postgres:secret@localhost:5432/postgres
   TESTINGREDIS_URL: ":6379"
+  TESTINGNATS_URL: "nats://127.0.0.1:4222"
+  PUBSUB_EMULATOR_HOST: ":8085"
 
 jobs:
   test:
