@@ -74,12 +74,19 @@ The minimal version of Go is `1.20`
 
 You can run `make onboarding` to see if you have required tools missing.
 
-- [Rancher-desktop](https://docs.rancherdesktop.io/getting-started/installation/)
-- [Tilt](https://tilt.dev/)
-- [Go](https://go.dev/dl/)
-- [ko](https://github.com/google/ko) `brew install ko` for tilt go container image
-- [Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/)
-- [Buf](https://docs.buf.build/installation) and [Generate code](https://docs.buf.build/tour/generate-go-code)
+- [Rancher-desktop](https://docs.rancherdesktop.io/getting-started/installation/) or [Docker-desktop](https://www.docker.com/products/docker-desktop/)
+- [Go](https://go.dev/dl/) `brew install ko`
+- [ko](https://github.com/google/ko) `brew install ko`
+- [Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/) `brew install kustomize`
+- [helm](https://helm.sh/docs/intro/install/) `brew install helm`
+- [vendir](https://carvel.dev/vendir/docs/v0.32.0/install/) `brew tap vmware-tanzu/carvel; brew install vendir`
+- [Tilt](https://tilt.dev/) `brew install tilt`
+- [Buf](https://docs.buf.build/installation) and [Generate code](https://docs.buf.build/tour/generate-go-code) `brew install buf` with following binaries
+  - go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+  - go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+  - go install github.com/envoyproxy/protoc-gen-validate@latest
+  - go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest
+  - go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
 - [golangci-lint](https://github.com/golangci/golangci-lint) `brew install golangci-lint`
 - [kubeseal](https://github.com/bitnami-labs/sealed-secrets) `brew install kubeseal`
 - [mockery](https://github.com/vektra/mockery) `brew install mockery`
