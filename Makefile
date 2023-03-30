@@ -24,8 +24,8 @@ GO_PKGS?=$$(go list ./... | grep -v /vendor/)
 linter:			## Run linter
 		@golangci-lint run -c golangci.yml ./...;
 
-## Generate Go code (pb, grpc and grpc-gateway) of the api
-proto-gen:
+
+proto-gen:		## Generate Go code (pb, grpc and grpc-gateway) of the api
 		@cd api && buf generate;
 
 test:			## Run unit test (without integration tests)
