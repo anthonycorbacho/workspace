@@ -6,7 +6,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel/exporters/prometheus"
-	"go.opentelemetry.io/otel/metric/global"
 	"go.opentelemetry.io/otel/sdk/metric"
 )
 
@@ -38,8 +37,6 @@ func NewMeter(name string, opts ...func(option *MeterOption)) (*metric.MeterProv
 		metric.WithResource(resource),
 		metric.WithReader(exporter),
 	)
-
-	global.SetMeterProvider(provider)
 
 	go func() {
 		mux := http.NewServeMux()

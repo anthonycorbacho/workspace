@@ -534,7 +534,33 @@ func GenSpanner(u *URL) (string, error) {
 	if instance == "" || dbname == "" {
 		return "", ErrMissingPath
 	}
-	return fmt.Sprintf(`project/%s/instances/%s/databases/%s`, project, instance, dbname), nil
+	return fmt.Sprintf(`projects/%s/instances/%s/databases/%s`, project, instance, dbname), nil
+}
+
+// GenSqlserver generates a sqlserver DSN from the passed URL.
+func GenSqlserver(u *URL) (string, error) {
+	host := u.Host
+	if host == "" {
+		host = "localhost"
+	}
+	z := &url.URL{
+		Scheme:   "sqlserver",
+		Opaque:   u.Opaque,
+		User:     u.User,
+		Host:     host,
+		Path:     u.Path,
+		RawQuery: u.RawQuery,
+		Fragment: u.Fragment,
+	}
+	if strings.ToLower(u.Scheme) == "azuresql" || z.Query().Has("fedauth") {
+		z.Scheme = "azuresql"
+	}
+	v := strings.Split(strings.TrimPrefix(z.Path, "/"), "/")
+	if n, q := len(v), z.Query(); !q.Has("database") && n != 0 && len(v[0]) != 0 {
+		q.Set("database", v[n-1])
+		z.Path, z.RawQuery = "/"+strings.Join(v[:n-1], "/"), q.Encode()
+	}
+	return z.String(), nil
 }
 
 // GenTableStore generates a tablestore DSN from the passed URL.
