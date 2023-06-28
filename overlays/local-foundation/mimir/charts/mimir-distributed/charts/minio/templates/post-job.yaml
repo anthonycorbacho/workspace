@@ -1,3 +1,4 @@
+{{- if or .Values.buckets .Values.users .Values.policies .Values.customCommands .Values.svcaccts }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -56,13 +57,22 @@ spec:
                   name: {{ template "minio.fullname" . }}
               - secret:
                   name: {{ template "minio.secretName" . }}
-              {{- range .Values.users }}
+              {{- range (concat .Values.users (default (list) .Values.svcaccts)) }}
               {{- if .existingSecret }}
               - secret:
                   name: {{ tpl .existingSecret $ }}
                   items:
                     - key: {{ .existingSecretKey }}
-                      path: secrets/{{ tpl .existingSecretKey $ }}
+                      path: secrets/{{ tpl .existingSecret $ }}/{{ tpl .existingSecretKey $ }}
+              {{- end }}
+              {{- end }}
+              {{- range ( default list .Values.svcaccts ) }}
+              {{- if .existingSecret }}
+              - secret:
+                  name: {{ tpl .existingSecret $ }}
+                  items:
+                    - key: {{ .existingSecretKey }}
+                      path: secrets-svc/{{ tpl .existingSecret $ }}/{{ tpl .existingSecretKey $ }}
               {{- end }}
               {{- end }}
         {{- if .Values.tls.enabled }}
@@ -81,7 +91,6 @@ spec:
           securityContext:
             runAsUser: {{ .Values.makeBucketJob.securityContext.runAsUser }}
             runAsGroup: {{ .Values.makeBucketJob.securityContext.runAsGroup }}
-            fsGroup: {{ .Values.makeBucketJob.securityContext.fsGroup }}
           {{- end }}
           imagePullPolicy: {{ .Values.mcImage.pullPolicy }}
           {{- if .Values.makeBucketJob.exitCommand }}
@@ -112,7 +121,6 @@ spec:
           securityContext:
             runAsUser: {{ .Values.makeUserJob.securityContext.runAsUser }}
             runAsGroup: {{ .Values.makeUserJob.securityContext.runAsGroup }}
-            fsGroup: {{ .Values.makeUserJob.securityContext.fsGroup }}
           {{- end }}
           imagePullPolicy: {{ .Values.mcImage.pullPolicy }}
           {{- if .Values.makeUserJob.exitCommand }}
@@ -143,7 +151,6 @@ spec:
           securityContext:
             runAsUser: {{ .Values.makePolicyJob.securityContext.runAsUser }}
             runAsGroup: {{ .Values.makePolicyJob.securityContext.runAsGroup }}
-            fsGroup: {{ .Values.makePolicyJob.securityContext.fsGroup }}
           {{- end }}
           imagePullPolicy: {{ .Values.mcImage.pullPolicy }}
           {{- if .Values.makePolicyJob.exitCommand }}
@@ -174,7 +181,6 @@ spec:
           securityContext:
             runAsUser: {{ .Values.customCommandJob.securityContext.runAsUser }}
             runAsGroup: {{ .Values.customCommandJob.securityContext.runAsGroup }}
-            fsGroup: {{ .Values.customCommandJob.securityContext.fsGroup }}
           {{- end }}
           imagePullPolicy: {{ .Values.mcImage.pullPolicy }}
           {{- if .Values.customCommandJob.exitCommand }}
@@ -205,7 +211,6 @@ spec:
           securityContext:
             runAsUser: {{ .Values.makeServiceAccountJob.securityContext.runAsUser }}
             runAsGroup: {{ .Values.makeServiceAccountJob.securityContext.runAsGroup }}
-            fsGroup: {{ .Values.makeServiceAccountJob.securityContext.fsGroup }}
           {{- end }}
           imagePullPolicy: {{ .Values.mcImage.pullPolicy }}
           {{- if .Values.makeServiceAccountJob.exitCommand }}
@@ -229,3 +234,4 @@ spec:
           resources:
             {{- toYaml .Values.makeServiceAccountJob.resources | nindent 12 }}
         {{- end }}
+{{- end }}

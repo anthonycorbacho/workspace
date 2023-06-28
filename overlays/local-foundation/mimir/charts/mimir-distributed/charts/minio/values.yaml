@@ -14,7 +14,7 @@ clusterDomain: cluster.local
 ##
 image:
   repository: quay.io/minio/minio
-  tag: RELEASE.2022-12-12T19-27-27Z
+  tag: RELEASE.2023-02-10T18-48-39Z
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -25,7 +25,7 @@ imagePullSecrets: []
 ##
 mcImage:
   repository: quay.io/minio/mc
-  tag: RELEASE.2022-12-13T00-23-28Z
+  tag: RELEASE.2023-01-28T20-29-38Z
   pullPolicy: IfNotPresent
 
 ## minio mode, i.e. standalone or distributed
@@ -320,7 +320,6 @@ makePolicyJob:
     enabled: false
     runAsUser: 1000
     runAsGroup: 1000
-    fsGroup: 1000
   resources:
     requests:
       memory: 128Mi
@@ -350,7 +349,6 @@ makeUserJob:
     enabled: false
     runAsUser: 1000
     runAsGroup: 1000
-    fsGroup: 1000
   resources:
     requests:
       memory: 128Mi
@@ -390,7 +388,6 @@ makeServiceAccountJob:
     enabled: false
     runAsUser: 1000
     runAsGroup: 1000
-    fsGroup: 1000
   resources:
     requests:
       memory: 128Mi
@@ -427,7 +424,6 @@ makeBucketJob:
     enabled: false
     runAsUser: 1000
     runAsGroup: 1000
-    fsGroup: 1000
   resources:
     requests:
       memory: 128Mi
@@ -445,7 +441,6 @@ customCommandJob:
     enabled: false
     runAsUser: 1000
     runAsGroup: 1000
-    fsGroup: 1000
   resources:
     requests:
       memory: 128Mi

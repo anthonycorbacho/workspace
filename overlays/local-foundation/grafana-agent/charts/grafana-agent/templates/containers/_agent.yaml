@@ -1,6 +1,6 @@
 {{- define "grafana-agent.container" -}}
 - name: grafana-agent
-  image: {{ .Values.image.repository }}:{{ include "grafana-agent.imageTag" . }}
+  image: {{ .Values.global.image.registry | default .Values.image.registry }}/{{ .Values.image.repository }}:{{ include "grafana-agent.imageTag" . }}
   imagePullPolicy: {{ .Values.image.pullPolicy }}
   args:
     {{- if eq .Values.agent.mode "flow"}}
@@ -29,11 +29,13 @@
     {{- range .Values.agent.extraEnv }}
     - {{- toYaml . | nindent 6 }}
     {{- end }}
+  {{- if .Values.agent.envFrom }}
+  envFrom:
+    {{- toYaml .Values.agent.envFrom | nindent 4 }}
+  {{- end }}
   ports:
     - containerPort: {{ .Values.agent.listenPort }}
       name: http-metrics
-    - containerPort: {{ .Values.agent.faroPort }}
-      name: faro
     {{- range $portMap := .Values.agent.extraPorts }}
     - containerPort: {{ $portMap.targetPort }}
       {{- if $portMap.hostPort }}
