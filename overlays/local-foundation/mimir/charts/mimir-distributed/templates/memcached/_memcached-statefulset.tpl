@@ -48,8 +48,7 @@ spec:
         {{- toYaml .nodeSelector | nindent 8 }}
       affinity:
         {{- toYaml .affinity | nindent 8 }}
-      topologySpreadConstraints:
-        {{- include "mimir.lib.topologySpreadConstraints" $ | nindent 8 }}
+      {{- include "mimir.lib.topologySpreadConstraints" $ | nindent 6 }}
       tolerations:
         {{- toYaml .tolerations | nindent 8 }}
       terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds }}
@@ -85,8 +84,7 @@ spec:
               name: client
           args:
             - -m {{ .allocatedMemory }}
-            - -o
-            - modern
+            - --extended=modern,track_sizes
             - -I {{ .maxItemMemory }}m
             - -c 16384
             - -v

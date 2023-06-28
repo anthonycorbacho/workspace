@@ -3,7 +3,7 @@ directories:
 - contents:
   - helmChart:
       appVersion: 2.8.2
-      version: 5.8.0
+      version: 5.8.4
     path: loki
   path: ./charts
 kind: LockConfig
