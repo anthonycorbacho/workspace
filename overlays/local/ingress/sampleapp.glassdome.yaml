@@ -1,0 +1,15 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: user
+  namespace: sample
+spec:
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`sampleapp.glassdome`)
+    kind: Rule
+    services:
+      - name: sampleapp
+        namespace: sample
+        port: 8080

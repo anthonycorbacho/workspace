@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: traefik-v2
+
+resources:
+  - namespace.yaml
+  - kubernetes-crd-definition-v1.yml # https://raw.githubusercontent.com/traefik/traefik/v2.10.1/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml
+  - kubernetes-crd-rbac.yml # https://raw.githubusercontent.com/traefik/traefik/v2.10.1/docs/content/reference/dynamic-configuration/kubernetes-crd-rbac.yml
+
+helmCharts:
+  - name: traefik
+    releaseName: traefik # maps to 'app.kubernetes.io/instance'
+    namespace: traefik-v2
+    valuesFile: values.yaml

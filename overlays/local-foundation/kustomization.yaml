@@ -13,3 +13,4 @@ resources:
   # - mimir - deactivated until confident.
   - prometheus
   - pyroscope
+  - traefik

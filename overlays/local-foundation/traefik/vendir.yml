@@ -1,0 +1,10 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: ./charts # default location in Helm world
+    contents:
+      - path: traefik
+        helmChart:
+          name: traefik
+          repository:
+            url: https://traefik.github.io/charts

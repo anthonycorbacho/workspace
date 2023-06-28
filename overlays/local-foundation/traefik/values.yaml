@@ -1,0 +1,46 @@
+deployment:
+  enabled: true
+  kind: Deployment
+  replicas: 1
+
+providers:
+  kubernetesCRD:
+    enabled: true
+    allowCrossNamespace: true
+    allowExternalNameServices: false
+    allowEmptyServices: false
+
+logs:
+  general:
+    format: json
+    level: ERROR
+  access:
+    enabled: true
+    format: json
+    bufferingSize: 100 # write the logs in an asynchronous fashion
+    fields:
+      general:
+        defaultmode: keep
+      headers:
+        defaultmode: keep
+        names:
+          Authorization: redact
+
+experimental:
+  http3:
+    enabled: true
+
+additionalArguments:
+  - "--entrypoints.name.http3"
+  - "--entryPoints.tcpep.address=:3179"
+  - "--experimental.http3=true"
+  - "--entrypoints.metrics.address=:9100/tcp"
+  - "--entrypoints.traefik.address=:9000/tcp"
+  - "--entrypoints.web.address=:8000/tcp"
+  - "--entrypoints.websecure.address=:8443/tcp"
+  - "--api.dashboard=true"
+  - "--ping=true"
+  - "--metrics.prometheus=true"
+  - "--metrics.prometheus.entrypoint=metrics"
+  - "--providers.kubernetescrd"
+  - "--providers.kubernetesingress"

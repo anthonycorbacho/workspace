@@ -4,5 +4,4 @@ commonAnnotations:
   environment: local
 
 resources:
-- ./ingress
-- ../../sample
+- sampleapp.glassdome.yaml

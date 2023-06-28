@@ -30,6 +30,9 @@ k8s_resource('tempo', labels=["monitoring"])
 # pyroscope for profiling
 k8s_resource('pyroscope', labels=["monitoring"])
 
+# Traefik
+k8s_resource('traefik', port_forwards='9000:9000', labels=["traefik"])
+
 
 # Load microservices
 # Local overlays will contain all microservices built with workspace.
