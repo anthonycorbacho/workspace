@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-// Transport is the allowed transport protocol types in a database URL scheme.
+// Transport is the allowed transport protocol types in a database [URL] scheme.
 type Transport uint
 
 // Transport types.
@@ -18,7 +18,7 @@ const (
 )
 
 // Scheme wraps information used for registering a database URL scheme for use
-// with Parse/Open.
+// with [Parse]/[Open].
 type Scheme struct {
 	// Driver is the name of the SQL driver that is set as the Scheme in
 	// Parse'd URLs and is the driver name expected by the standard sql.Open
@@ -53,7 +53,7 @@ func BaseSchemes() []Scheme {
 		{"oracle", GenFromURL("oracle://localhost:1521"), 0, false, []string{"ora", "oci", "oci8", "odpi", "odpi-c"}, ""},
 		{"postgres", GenPostgres, TransportUnix, false, []string{"pg", "postgresql", "pgsql"}, ""},
 		{"sqlite3", GenOpaque, 0, true, []string{"sqlite", "file"}, ""},
-		{"sqlserver", GenScheme("sqlserver"), 0, false, []string{"ms", "mssql", "azuresql"}, ""},
+		{"sqlserver", GenSqlserver, 0, false, []string{"ms", "mssql", "azuresql"}, ""},
 		// wire compatibles
 		{"cockroachdb", GenFromURL("postgres://localhost:26257/?sslmode=disable"), 0, false, []string{"cr", "cockroach", "crdb", "cdb"}, "postgres"},
 		{"memsql", GenMysql, 0, false, nil, "mysql"},
@@ -77,6 +77,7 @@ func BaseSchemes() []Scheme {
 		{"databend", GenDatabend, 0, false, []string{"dd", "bend"}, ""},
 		{"exasol", GenExasol, 0, false, []string{"ex", "exa"}, ""},
 		{"firebirdsql", GenFirebird, 0, false, []string{"fb", "firebird"}, ""},
+		{"flightsql", GenScheme("flightsql"), 0, false, []string{"fl", "flight"}, ""},
 		{"genji", GenOpaque, 0, true, []string{"gj"}, ""},
 		{"h2", GenFromURL("h2://localhost:9092/"), 0, false, nil, ""},
 		{"hdb", GenScheme("hdb"), 0, false, []string{"sa", "saphana", "sap", "hana"}, ""},
@@ -139,7 +140,7 @@ func registerAlias(name, alias string, doSort bool) {
 	schemeMap[alias] = scheme
 }
 
-// Register registers a Scheme.
+// Register registers a [Scheme].
 func Register(scheme Scheme) {
 	if scheme.Generator == nil {
 		panic("must specify Generator when registering Scheme")
@@ -189,7 +190,8 @@ func Register(scheme Scheme) {
 	})
 }
 
-// Unregister unregisters a Scheme and all associated aliases.
+// Unregister unregisters a scheme and all associated aliases, returning the
+// removed [Scheme].
 func Unregister(name string) *Scheme {
 	if scheme, ok := schemeMap[name]; ok {
 		for _, alias := range scheme.Aliases {
@@ -201,12 +203,13 @@ func Unregister(name string) *Scheme {
 	return nil
 }
 
-// RegisterAlias registers a alias for an already registered Scheme.
+// RegisterAlias registers an additional alias for a registered scheme.
 func RegisterAlias(name, alias string) {
 	registerAlias(name, alias, true)
 }
 
-// Protocols returns list of all valid protocol aliases for a scheme name.
+// Protocols returns list of all valid protocol aliases for a registered
+// [Scheme] name.
 func Protocols(name string) []string {
 	if scheme, ok := schemeMap[name]; ok {
 		return append([]string{scheme.Driver}, scheme.Aliases...)
