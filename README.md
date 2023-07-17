@@ -34,7 +34,7 @@ The good part of namespacing our application per domain is that you can structur
 Another benefit of namespacing the applications is that you will be able to also apply specific resource limits and service account rules per namespace, limiting the resource allocation and visibility of our microservices.
 
 ```bash
-cloud-workspace/
+workspace/
 ├── .github                       # GitHub folder that contain workflow, codeowners and templates
 ├── README.md
 ├── Tiltfile                      # Configuration for running a local env
