@@ -6,10 +6,10 @@ require (
 	cloud.google.com/go/pubsub v1.32.0
 	github.com/cenkalti/backoff/v4 v4.2.1
 	github.com/envoyproxy/protoc-gen-validate v1.0.2
-	github.com/felixge/httpsnoop v1.0.3
-	github.com/go-chi/chi/v5 v5.0.8
 	github.com/golang-migrate/migrate/v4 v4.16.2
 	github.com/golang/protobuf v1.5.3
+	github.com/gorilla/handlers v1.4.2
+	github.com/gorilla/mux v1.8.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.16.0
@@ -29,6 +29,7 @@ require (
 	github.com/uptrace/opentelemetry-go-extra/otelsqlx v0.2.2
 	github.com/vmihailenco/msgpack/v5 v5.3.5
 	github.com/xo/dburl v0.14.2
+	go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux v0.42.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.42.0
 	go.opentelemetry.io/contrib/propagators/b3 v1.17.0
 	go.opentelemetry.io/otel v1.16.0
@@ -54,6 +55,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/felixge/httpsnoop v1.0.3 // indirect
 	github.com/go-logr/logr v1.2.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/glog v1.1.1 // indirect

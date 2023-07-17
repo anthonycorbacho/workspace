@@ -19,14 +19,14 @@ import (
 	grpckit "github.com/anthonycorbacho/workspace/kit/grpc"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/telemetry"
-	"github.com/anthonycorbacho/workspace/kit/telemetry/otelchi"
-	mux "github.com/go-chi/chi/v5"
-	muxmid "github.com/go-chi/chi/v5/middleware"
+	handlers "github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
 	grpcprometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/rs/cors"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux"
 	"go.uber.org/automaxprocs/maxprocs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -61,7 +61,7 @@ type Foundation struct {
 	grpcOnce   sync.Once
 	// HTTP server
 	httpServer *http.Server
-	httpRouter *mux.Mux
+	httpRouter *mux.Router
 	httpOnce   sync.Once
 	// Healths checks
 	livenessProbe  http.HandlerFunc
@@ -131,14 +131,10 @@ func (f *Foundation) initHTTPServerOnce() {
 
 		// create http router
 		r := mux.NewRouter()
-		r.Use(muxmid.Compress(5))
+		r.Use(handlers.CompressHandler)
 
 		// Provide tracing for OTEL
-		r.Use(otelchi.Middleware(
-			name,
-			otelchi.WithChiRoutes(r),
-			otelchi.WithRequestMethodInSpanName(true),
-		))
+		r.Use(otelmux.Middleware(name))
 
 		// Provide Prometheus metric
 		// The metrics measured are based on RED and/or Four golden signals,
@@ -147,6 +143,8 @@ func (f *Foundation) initHTTPServerOnce() {
 			Service:  name,
 			Recorder: metrics.NewRecorder(metrics.Config{}),
 		})))
+
+		r.StrictSlash(true)
 
 		// If cors is enabled, we should set it depending on the options
 		if opts.enableCors {
@@ -225,9 +223,7 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 func (f *Foundation) RegisterHTTPHandler(path string, fn http.HandlerFunc, methods ...string) {
 	// make sure the HTTP server has been initialized
 	f.initHTTPServerOnce()
-	for _, method := range methods {
-		f.httpRouter.Method(method, path, fn)
-	}
+	f.httpRouter.HandleFunc(path, fn).Methods(methods...)
 }
 
 // RegisterLiveness register a liveness function for /healthz
@@ -329,7 +325,7 @@ func (f *Foundation) Serve() error {
 
 		// init the http server
 		if f.gw != nil {
-			f.httpRouter.Mount("/", f.gw)
+			f.httpRouter.PathPrefix("/").Handler(f.gw)
 		}
 		serverError <- f.httpServer.ListenAndServe()
 	}(serverError)
@@ -361,10 +357,11 @@ func (f *Foundation) Serve() error {
 func internalHTTP(l *log.Logger, readiness http.HandlerFunc, liveliness http.HandlerFunc) {
 
 	r := mux.NewRouter()
+	r.StrictSlash(true)
 
 	// Init default health checks.
-	r.Method("GET", "/healthz", liveliness)
-	r.Method("GET", "/readyz", readiness)
+	r.HandleFunc("/healthz", liveliness).Name("healthz").Methods("GET")
+	r.HandleFunc("/readyz", readiness).Name("readyz").Methods("GET")
 
 	// pprof
 	r.HandleFunc("/debug/pprof/", pprof.Index)

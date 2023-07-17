@@ -7,7 +7,7 @@ import (
 	"net"
 	"net/http"
 
-	mux "github.com/go-chi/chi/v5"
+	"github.com/gorilla/mux"
 	"github.com/slok/go-http-metrics/middleware"
 )
 
@@ -22,36 +22,19 @@ func handler(m middleware.Middleware, h http.Handler) http.Handler {
 			w: wi,
 			r: r,
 		}
+		route := mux.CurrentRoute(r)
+		path, err := route.GetPathTemplate()
+		if err != nil {
+			path, err = route.GetPathRegexp()
+			if err != nil {
+				path = r.URL.Path
+			}
+		}
 
-		path := getRoutePattern(r)
 		m.Measure(path, reporter, func() {
 			h.ServeHTTP(wi, r)
 		})
 	})
-}
-
-func getRoutePattern(r *http.Request) string {
-	rctx := mux.RouteContext(r.Context())
-	if pattern := rctx.RoutePattern(); pattern != "" {
-		// Pattern is already available
-		return pattern
-	}
-
-	routePath := r.URL.Path
-	if r.URL.RawPath != "" {
-		routePath = r.URL.RawPath
-	}
-
-	tctx := mux.NewRouteContext()
-	if !rctx.Routes.Match(tctx, r.Method, routePath) {
-		// No matching pattern, so just return the request path.
-		// Depending on your use case, it might make sense to
-		// return an empty string or error here instead
-		return routePath
-	}
-
-	// tctx has the updated pattern, since Match mutates it
-	return tctx.RoutePattern()
 }
 
 // Middleware sets up a handler to record metric of the incoming
