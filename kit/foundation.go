@@ -134,7 +134,9 @@ func (f *Foundation) initHTTPServerOnce() {
 		r.Use(handlers.CompressHandler)
 
 		// Provide tracing for OTEL
-		r.Use(otelmux.Middleware(name))
+		r.Use(otelmux.Middleware(name, otelmux.WithSpanNameFormatter(func(routeName string, r *http.Request) string {
+			return fmt.Sprintf("[%s] %s", r.Method, r.RequestURI)
+		})))
 
 		// Provide Prometheus metric
 		// The metrics measured are based on RED and/or Four golden signals,
