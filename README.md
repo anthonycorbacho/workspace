@@ -75,7 +75,7 @@ The minimal version of Go is `1.20`
 You can run `make onboarding` to see if you have required tools missing.
 
 - [Rancher-desktop](https://docs.rancherdesktop.io/getting-started/installation/) or [Docker-desktop](https://www.docker.com/products/docker-desktop/)
-- [Go](https://go.dev/dl/) `brew install ko`
+- [Go](https://go.dev/dl/) `brew install go`
 - [ko](https://github.com/google/ko) `brew install ko`
 - [Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/) `brew install kustomize`
 - [helm](https://helm.sh/docs/intro/install/) `brew install helm`
