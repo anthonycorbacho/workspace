@@ -114,12 +114,12 @@ In the application layout, this will be the lower level, basically, we will wrap
 func (c *Client) Fetch(ctx context.Context, id string) (&Struct, error) {
   d, err := c.Select(ctx, id)
   if err != nil {
-    // case of busines define error
-    if err = sql.ErrNoRows {
+    // case of business defined error
+    if err == sql.ErrNoRows {
       return nil, myapp.ErrNotFound
     }
-  // case of undefined error
-  return nil, errors.Warp(error, "sql.client.fetch")
+    // case of undefined error
+    return nil, errors.Warp(error, "sql.client.fetch")
   }
 
   return convert(d), nil
