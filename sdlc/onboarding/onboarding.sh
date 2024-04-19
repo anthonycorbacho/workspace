@@ -30,11 +30,11 @@ go::verify() {
 }
 
 go:install_dependencies() {
-  common::check_installed "protoc-gen-grpc-gateway" "Can't find 'protoc-gen-grpc-gateway', please run 'go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway'"
-  common::check_installed "protoc-gen-openapiv2" "Can't find 'protoc-gen-openapiv2', please run 'go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2'"
-  common::check_installed "protoc-gen-go" "Can't find 'protoc-gen-go', please run 'go install google.golang.org/protobuf/cmd/protoc-gen-go'"
-  common::check_installed "protoc-gen-go-grpc" "Can't find 'protoc-gen-go-grpc', please run 'go install google.golang.org/grpc/cmd/protoc-gen-go-grpc'"
-  common::check_installed "protoc-gen-validate" "Can't find 'protoc-gen-validate', please run 'go install github.com/envoyproxy/protoc-gen-validate'"
+  common::check_installed "protoc-gen-grpc-gateway" "Can't find 'protoc-gen-grpc-gateway', please run 'go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest'"
+  common::check_installed "protoc-gen-openapiv2" "Can't find 'protoc-gen-openapiv2', please run 'go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest'"
+  common::check_installed "protoc-gen-go" "Can't find 'protoc-gen-go', please run 'go install google.golang.org/protobuf/cmd/protoc-gen-go@latest'"
+  common::check_installed "protoc-gen-go-grpc" "Can't find 'protoc-gen-go-grpc', please run 'go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest'"
+  common::check_installed "protoc-gen-validate" "Can't find 'protoc-gen-validate', please run 'go install github.com/envoyproxy/protoc-gen-validate@latest'"
 }
 
 brew::verify() {
