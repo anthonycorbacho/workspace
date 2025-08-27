@@ -7,35 +7,26 @@ A [Go](http://golang.org) client for the [NATS messaging system](https://nats.io
 [License-Image]: https://img.shields.io/badge/License-Apache2-blue.svg
 [ReportCard-Url]: https://goreportcard.com/report/github.com/nats-io/nats.go
 [ReportCard-Image]: https://goreportcard.com/badge/github.com/nats-io/nats.go
-[Build-Status-Url]: https://travis-ci.com/github/nats-io/nats.go
-[Build-Status-Image]: https://travis-ci.com/nats-io/nats.go.svg?branch=main
+[Build-Status-Url]: https://github.com/nats-io/nats.go/actions
+[Build-Status-Image]: https://github.com/nats-io/nats.go/actions/workflows/ci.yaml/badge.svg?branch=main
 [GoDoc-Url]: https://pkg.go.dev/github.com/nats-io/nats.go
 [GoDoc-Image]: https://img.shields.io/badge/GoDoc-reference-007d9c
 [Coverage-Url]: https://coveralls.io/r/nats-io/nats.go?branch=main
 [Coverage-image]: https://coveralls.io/repos/github/nats-io/nats.go/badge.svg?branch=main
 
+**Check out [NATS by example](https://natsbyexample.com) - An evolving collection of runnable, cross-client reference examples for NATS.**
+
 ## Installation
 
 ```bash
-# Go client
-go get github.com/nats-io/nats.go/
+# To get the latest released Go client:
+go get github.com/nats-io/nats.go@latest
 
-# Server
-go get github.com/nats-io/nats-server
-```
+# To get a specific version:
+go get github.com/nats-io/nats.go@v1.45.0
 
-When using or transitioning to Go modules support:
-
-```bash
-# Go client latest or explicit version
-go get github.com/nats-io/nats.go/@latest
-go get github.com/nats-io/nats.go/@v1.27.1
-
-# For latest NATS Server, add /v2 at the end
-go get github.com/nats-io/nats-server/v2
-
-# NATS Server v1 is installed otherwise
-# go get github.com/nats-io/nats-server
+# Note that the latest major version for NATS Server is v2:
+go get github.com/nats-io/nats-server/v2@latest
 ```
 
 ## Basic Usage
@@ -90,145 +81,49 @@ nc.Drain()
 nc.Close()
 ```
 
-## JetStream Basic Usage
+## JetStream
+[![JetStream API Reference](https://pkg.go.dev/badge/github.com/nats-io/nats.go/jetstream.svg)](https://pkg.go.dev/github.com/nats-io/nats.go/jetstream)
 
-> __NOTE__
->
-> We encourage you to try out a new, simplified version on JetStream API.
-> The new API is currently in preview and is available under `jetstream` package.
->
-> You can find more information on the new API [here](https://github.com/nats-io/nats.go/blob/main/jetstream/README.md)
+JetStream is the built-in NATS persistence system. `nats.go` provides a built-in
+API enabling both managing JetStream assets as well as publishing/consuming
+persistent messages.
 
-```go
-import "github.com/nats-io/nats.go"
 
-// Connect to NATS
-nc, _ := nats.Connect(nats.DefaultURL)
-
-// Create JetStream Context
-js, _ := nc.JetStream(nats.PublishAsyncMaxPending(256))
-
-// Simple Stream Publisher
-js.Publish("ORDERS.scratch", []byte("hello"))
-
-// Simple Async Stream Publisher
-for i := 0; i < 500; i++ {
-	js.PublishAsync("ORDERS.scratch", []byte("hello"))
-}
-select {
-case <-js.PublishAsyncComplete():
-case <-time.After(5 * time.Second):
-	fmt.Println("Did not resolve in time")
-}
-
-// Simple Async Ephemeral Consumer
-js.Subscribe("ORDERS.*", func(m *nats.Msg) {
-	fmt.Printf("Received a JetStream message: %s\n", string(m.Data))
-})
-
-// Simple Sync Durable Consumer (optional SubOpts at the end)
-sub, err := js.SubscribeSync("ORDERS.*", nats.Durable("MONITOR"), nats.MaxDeliver(3))
-m, err := sub.NextMsg(timeout)
-
-// Simple Pull Consumer
-sub, err := js.PullSubscribe("ORDERS.*", "MONITOR")
-msgs, err := sub.Fetch(10)
-
-// Unsubscribe
-sub.Unsubscribe()
-
-// Drain
-sub.Drain()
-```
-
-## JetStream Basic Management
+### Basic usage
 
 ```go
-import "github.com/nats-io/nats.go"
-
-// Connect to NATS
+// connect to nats server
 nc, _ := nats.Connect(nats.DefaultURL)
 
-// Create JetStream Context
-js, _ := nc.JetStream()
+// create jetstream context from nats connection
+js, _ := jetstream.New(nc)
 
-// Create a Stream
-js.AddStream(&nats.StreamConfig{
-	Name:     "ORDERS",
-	Subjects: []string{"ORDERS.*"},
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+// get existing stream handle
+stream, _ := js.Stream(ctx, "foo")
+
+// retrieve consumer handle from a stream
+cons, _ := stream.Consumer(ctx, "cons")
+
+// consume messages from the consumer in callback
+cc, _ := cons.Consume(func(msg jetstream.Msg) {
+    fmt.Println("Received jetstream message: ", string(msg.Data()))
+    msg.Ack()
 })
-
-// Update a Stream
-js.UpdateStream(&nats.StreamConfig{
-	Name:     "ORDERS",
-	MaxBytes: 8,
-})
-
-// Create a Consumer
-js.AddConsumer("ORDERS", &nats.ConsumerConfig{
-	Durable: "MONITOR",
-})
-
-// Delete Consumer
-js.DeleteConsumer("ORDERS", "MONITOR")
-
-// Delete Stream
-js.DeleteStream("ORDERS")
+defer cc.Stop()
 ```
 
-## Encoded Connections
+To find more information on `nats.go` JetStream API, visit
+[`jetstream/README.md`](jetstream/README.md)
 
-```go
+> The current JetStream API replaces the [legacy JetStream API](legacy_jetstream.md)
 
-nc, _ := nats.Connect(nats.DefaultURL)
-c, _ := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-defer c.Close()
+## Service API
 
-// Simple Publisher
-c.Publish("foo", "Hello World")
-
-// Simple Async Subscriber
-c.Subscribe("foo", func(s string) {
-    fmt.Printf("Received a message: %s\n", s)
-})
-
-// EncodedConn can Publish any raw Go type using the registered Encoder
-type person struct {
-     Name     string
-     Address  string
-     Age      int
-}
-
-// Go type Subscriber
-c.Subscribe("hello", func(p *person) {
-    fmt.Printf("Received a person: %+v\n", p)
-})
-
-me := &person{Name: "derek", Age: 22, Address: "140 New Montgomery Street, San Francisco, CA"}
-
-// Go type Publisher
-c.Publish("hello", me)
-
-// Unsubscribe
-sub, err := c.Subscribe("foo", nil)
-// ...
-sub.Unsubscribe()
-
-// Requests
-var response string
-err = c.Request("help", "help me", &response, 10*time.Millisecond)
-if err != nil {
-    fmt.Printf("Request failed: %v\n", err)
-}
-
-// Replying
-c.Subscribe("help", func(subj, reply string, msg string) {
-    c.Publish(reply, "I can help!")
-})
-
-// Close connection
-c.Close();
-```
+The service API (`micro`) allows you to [easily build NATS services](micro/README.md) The
+services API is currently in beta release.
 
 ## New Authentication (Nkeys and User Credentials)
 This requires server with version >= 2.0.0
@@ -307,34 +202,6 @@ if err != nil {
 	t.Fatalf("Got an error on Connect with Secure Options: %+v\n", err)
 }
 
-```
-
-## Using Go Channels (netchan)
-
-```go
-nc, _ := nats.Connect(nats.DefaultURL)
-ec, _ := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-defer ec.Close()
-
-type person struct {
-     Name     string
-     Address  string
-     Age      int
-}
-
-recvCh := make(chan *person)
-ec.BindRecvChan("hello", recvCh)
-
-sendCh := make(chan *person)
-ec.BindSendChan("hello", sendCh)
-
-me := &person{Name: "derek", Age: 22, Address: "140 New Montgomery Street"}
-
-// Send via Go channels
-sendCh <- me
-
-// Receive via Go channels
-who := <- recvCh
 ```
 
 ## Wildcard Subscriptions
@@ -503,18 +370,20 @@ msg, err := nc.RequestWithContext(ctx, "foo", []byte("bar"))
 sub, err := nc.SubscribeSync("foo")
 msg, err := sub.NextMsgWithContext(ctx)
 
-// Encoded Request with context
-c, err := nats.NewEncodedConn(nc, nats.JSON_ENCODER)
-type request struct {
-	Message string `json:"message"`
-}
-type response struct {
-	Code int `json:"code"`
-}
-req := &request{Message: "Hello"}
-resp := &response{}
-err := c.RequestWithContext(ctx, "foo", req, resp)
 ```
+
+## Backwards compatibility
+
+In the development of nats.go, we are committed to maintaining backward compatibility and ensuring a stable and reliable  experience for all users. In general, we follow the standard go compatibility guidelines.
+However, it's important to clarify our stance on certain types of changes:
+
+- **Expanding structures:**
+Adding new fields to structs is not considered a breaking change.
+
+- **Adding methods to exported interfaces:**
+Extending public interfaces with new methods is also not viewed as a breaking change within the context of this project. It is important to note that no unexported methods will be added to interfaces allowing users to implement them.
+
+Additionally, this library always supports at least 2 latest minor Go versions. For example, if the latest Go version is 1.22, the library will support Go 1.21 and 1.22.
 
 ## License
 

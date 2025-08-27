@@ -28,7 +28,10 @@ import (
 	ipubsub "cloud.google.com/go/internal/pubsub"
 	pb "cloud.google.com/go/pubsub/apiv1/pubsubpb"
 	"cloud.google.com/go/pubsub/internal/scheduler"
+	"github.com/google/uuid"
 	gax "github.com/googleapis/gax-go/v2"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -52,7 +55,14 @@ type Subscription struct {
 	mu            sync.Mutex
 	receiveActive bool
 
-	enableOrdering bool
+	// clientID to be used across all streaming pull connections that are created.
+	// This indicates to the server that any guarantees made for a stream that
+	// disconnected will be made for the stream that is created to replace it.
+	clientID string
+	// enableTracing enable otel tracing of Pub/Sub messages on this subscription.
+	// This is configured at client instantiation, and allows
+	// disabling of tracing even when a tracer provider is detected.
+	enableTracing bool
 }
 
 // Subscription creates a reference to a subscription.
@@ -62,9 +72,16 @@ func (c *Client) Subscription(id string) *Subscription {
 
 // SubscriptionInProject creates a reference to a subscription in a given project.
 func (c *Client) SubscriptionInProject(id, projectID string) *Subscription {
+	return newSubscription(c, fmt.Sprintf("projects/%s/subscriptions/%s", projectID, id))
+}
+
+func newSubscription(c *Client, name string) *Subscription {
 	return &Subscription{
-		c:    c,
-		name: fmt.Sprintf("projects/%s/subscriptions/%s", projectID, id),
+		c:               c,
+		name:            name,
+		clientID:        uuid.NewString(),
+		ReceiveSettings: DefaultReceiveSettings,
+		enableTracing:   c.enableTracing,
 	}
 }
 
@@ -114,7 +131,7 @@ func (subs *SubscriptionIterator) Next() (*Subscription, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Subscription{c: subs.c, name: subName}, nil
+	return newSubscription(subs.c, subName), nil
 }
 
 // NextConfig returns the next subscription config. If there are no more subscriptions,
@@ -148,6 +165,10 @@ type PushConfig struct {
 	// This field is optional and should be set only by users interested in
 	// authenticated push.
 	AuthenticationMethod AuthenticationMethod
+
+	// The format of the delivered message to the push endpoint is defined by
+	// the chosen wrapper. When unset, `PubsubWrapper` is used.
+	Wrapper Wrapper
 }
 
 func (pc *PushConfig) toProto() *pb.PushConfig {
@@ -165,12 +186,19 @@ func (pc *PushConfig) toProto() *pb.PushConfig {
 		default: // TODO: add others here when GAIC adds more definitions.
 		}
 	}
+	if w := pc.Wrapper; w != nil {
+		switch wt := w.(type) {
+		case *PubsubWrapper:
+			pbCfg.Wrapper = wt.toProto()
+		case *NoWrapper:
+			pbCfg.Wrapper = wt.toProto()
+		default:
+		}
+	}
 	return pbCfg
 }
 
-// AuthenticationMethod is used by push points to verify the source of push requests.
-// This interface defines fields that are part of a closed alpha that may not be accessible
-// to all users.
+// AuthenticationMethod is used by push subscriptions to verify the source of push requests.
 type AuthenticationMethod interface {
 	isAuthMethod() bool
 }
@@ -212,6 +240,49 @@ func (oidcToken *OIDCToken) toProto() *pb.PushConfig_OidcToken_ {
 	}
 }
 
+// Wrapper defines the format of message delivered to push endpoints.
+type Wrapper interface {
+	isWrapper() bool
+}
+
+// PubsubWrapper denotes sending the payload to the push endpoint in the form of the JSON
+// representation of a PubsubMessage
+// (https://cloud.google.com/pubsub/docs/reference/rpc/google.pubsub.v1#pubsubmessage).
+type PubsubWrapper struct{}
+
+var _ Wrapper = (*PubsubWrapper)(nil)
+
+func (p *PubsubWrapper) isWrapper() bool { return true }
+
+func (p *PubsubWrapper) toProto() *pb.PushConfig_PubsubWrapper_ {
+	if p == nil {
+		return nil
+	}
+	return &pb.PushConfig_PubsubWrapper_{
+		PubsubWrapper: &pb.PushConfig_PubsubWrapper{},
+	}
+}
+
+// NoWrapper denotes not wrapping the payload sent to the push endpoint.
+type NoWrapper struct {
+	WriteMetadata bool
+}
+
+var _ Wrapper = (*NoWrapper)(nil)
+
+func (n *NoWrapper) isWrapper() bool { return true }
+
+func (n *NoWrapper) toProto() *pb.PushConfig_NoWrapper_ {
+	if n == nil {
+		return nil
+	}
+	return &pb.PushConfig_NoWrapper_{
+		NoWrapper: &pb.PushConfig_NoWrapper{
+			WriteMetadata: n.WriteMetadata,
+		},
+	}
+}
+
 // BigQueryConfigState denotes the possible states for a BigQuery Subscription.
 type BigQueryConfigState int
 
@@ -239,8 +310,12 @@ type BigQueryConfig struct {
 	Table string
 
 	// When true, use the topic's schema as the columns to write to in BigQuery,
-	// if it exists.
+	// if it exists. Cannot be enabled at the same time as UseTableSchema.
 	UseTopicSchema bool
+
+	// When true, use the table's schema as the columns to write to in BigQuery,
+	// if it exists. Cannot be enabled at the same time as UseTopicSchema.
+	UseTableSchema bool
 
 	// When true, write the subscription name, message_id, publish_time,
 	// attributes, and ordering_key to additional columns in the table. The
@@ -274,6 +349,7 @@ func (bc *BigQueryConfig) toProto() *pb.BigQueryConfig {
 	pbCfg := &pb.BigQueryConfig{
 		Table:             bc.Table,
 		UseTopicSchema:    bc.UseTopicSchema,
+		UseTableSchema:    bc.UseTableSchema,
 		WriteMetadata:     bc.WriteMetadata,
 		DropUnknownFields: bc.DropUnknownFields,
 		State:             pb.BigQueryConfig_State(bc.State),
@@ -475,7 +551,7 @@ type SubscriptionConfig struct {
 	// When calling Subscription.Receive(), the client will check this
 	// value with a call to Subscription.Config(), which requires the
 	// roles/viewer or roles/pubsub.viewer role on your service account.
-	// If that call fails, mesages with ordering keys will be delivered in order.
+	// If that call fails, messages with ordering keys will be delivered in order.
 	EnableMessageOrdering bool
 
 	// DeadLetterPolicy specifies the conditions for dead lettering messages in
@@ -531,6 +607,10 @@ type SubscriptionConfig struct {
 	// receive messages. This field is set only in responses from the server;
 	// it is ignored if it is set in any requests.
 	State SubscriptionState
+
+	// MessageTransforms are the transforms to be applied to messages before they are delivered
+	// to subscribers. Transforms are applied in the order specified.
+	MessageTransforms []MessageTransform
 }
 
 // String returns the globally unique printable name of the subscription config.
@@ -589,6 +669,7 @@ func (cfg *SubscriptionConfig) toProto(name string) *pb.Subscription {
 		RetryPolicy:               pbRetryPolicy,
 		Detached:                  cfg.Detached,
 		EnableExactlyOnceDelivery: cfg.EnableExactlyOnceDelivery,
+		MessageTransforms:         messageTransformsToProto(cfg.MessageTransforms),
 	}
 }
 
@@ -619,6 +700,7 @@ func protoToSubscriptionConfig(pbSub *pb.Subscription, c *Client) (SubscriptionC
 		TopicMessageRetentionDuration: pbSub.TopicMessageRetentionDuration.AsDuration(),
 		EnableExactlyOnceDelivery:     pbSub.EnableExactlyOnceDelivery,
 		State:                         SubscriptionState(pbSub.State),
+		MessageTransforms:             protoToMessageTransforms(pbSub.MessageTransforms),
 	}
 	if pc := protoToPushConfig(pbSub.PushConfig); pc != nil {
 		subC.PushConfig = *pc
@@ -648,6 +730,16 @@ func protoToPushConfig(pbPc *pb.PushConfig) *PushConfig {
 			}
 		}
 	}
+	if w := pbPc.Wrapper; w != nil {
+		switch wt := w.(type) {
+		case *pb.PushConfig_PubsubWrapper_:
+			pc.Wrapper = &PubsubWrapper{}
+		case *pb.PushConfig_NoWrapper_:
+			pc.Wrapper = &NoWrapper{
+				WriteMetadata: wt.NoWrapper.WriteMetadata,
+			}
+		}
+	}
 	return pc
 }
 
@@ -658,6 +750,7 @@ func protoToBQConfig(pbBQ *pb.BigQueryConfig) *BigQueryConfig {
 	bq := &BigQueryConfig{
 		Table:             pbBQ.GetTable(),
 		UseTopicSchema:    pbBQ.GetUseTopicSchema(),
+		UseTableSchema:    pbBQ.GetUseTableSchema(),
 		DropUnknownFields: pbBQ.GetDropUnknownFields(),
 		WriteMetadata:     pbBQ.GetWriteMetadata(),
 		State:             BigQueryConfigState(pbBQ.State),
@@ -818,8 +911,7 @@ type ReceiveSettings struct {
 	//
 	// MinExtensionPeriod must be between 10s and 600s (inclusive). This configuration
 	// can be disabled by specifying a duration less than (or equal to) 0.
-	// Defaults to off but set to 60 seconds if the subscription has exactly-once delivery enabled,
-	// which will be added in a future release.
+	// Disabled by default but set to 60 seconds if the subscription has exactly-once delivery enabled.
 	MinExtensionPeriod time.Duration
 
 	// MaxOutstandingMessages is the maximum number of unprocessed messages
@@ -834,6 +926,8 @@ type ReceiveSettings struct {
 	// be treated as if it were DefaultReceiveSettings.MaxOutstandingBytes. If
 	// the value is negative, then there will be no limit on the number of bytes
 	// for unprocessed messages.
+	// This defaults to 1e9 or 1 GB. For machines that have less memory available,
+	// it is recommended to decrease this value so as to not run into OOM issues.
 	MaxOutstandingBytes int
 
 	// UseLegacyFlowControl disables enforcing flow control settings at the Cloud
@@ -977,6 +1071,9 @@ type SubscriptionConfigToUpdate struct {
 
 	// If set, EnableExactlyOnce is changed.
 	EnableExactlyOnceDelivery optional.Bool
+
+	// If non-nil, the entire list of message transforms is replaced with the following.
+	MessageTransforms []MessageTransform
 }
 
 // Update changes an existing subscription according to the fields set in cfg.
@@ -1044,6 +1141,10 @@ func (s *Subscription) updateRequest(cfg *SubscriptionConfigToUpdate) *pb.Update
 	if cfg.EnableExactlyOnceDelivery != nil {
 		psub.EnableExactlyOnceDelivery = optional.ToBool(cfg.EnableExactlyOnceDelivery)
 		paths = append(paths, "enable_exactly_once_delivery")
+	}
+	if cfg.MessageTransforms != nil {
+		psub.MessageTransforms = messageTransformsToProto(cfg.MessageTransforms)
+		paths = append(paths, "message_transforms")
 	}
 	return &pb.UpdateSubscriptionRequest{
 		Subscription: psub,
@@ -1175,8 +1276,6 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.receiveActive = false; s.mu.Unlock() }()
 
-	s.checkOrdering(ctx)
-
 	// TODO(hongalex): move settings check to a helper function to make it more testable
 	maxCount := s.ReceiveSettings.MaxOutstandingMessages
 	if maxCount == 0 {
@@ -1221,6 +1320,7 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 		maxOutstandingMessages: maxCount,
 		maxOutstandingBytes:    maxBytes,
 		useLegacyFlowControl:   s.ReceiveSettings.UseLegacyFlowControl,
+		clientID:               s.clientID,
 	}
 	fc := newSubscriptionFlowController(FlowControlSettings{
 		MaxOutstandingMessages: maxCount,
@@ -1252,6 +1352,7 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 		// canceling that context would immediately stop the iterator without
 		// waiting for unacked messages.
 		iter := newMessageIterator(s.c.subc, s.name, po)
+		iter.enableTracing = s.enableTracing
 
 		// We cannot use errgroup from Receive here. Receive might already be
 		// calling group.Wait, and group.Wait cannot be called concurrently with
@@ -1296,8 +1397,9 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 					return nil
 				default:
 				}
+
 				msgs, err := iter.receive(maxToPull)
-				if err == io.EOF {
+				if errors.Is(err, io.EOF) {
 					return nil
 				}
 				if err != nil {
@@ -1313,9 +1415,34 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 					return nil
 				default:
 				}
+
 				for i, msg := range msgs {
 					msg := msg
-					// TODO(jba): call acquire closer to when the message is allocated.
+					iter.eoMu.RLock()
+					ackh, _ := msgAckHandler(msg, iter.enableExactlyOnceDelivery)
+					iter.eoMu.RUnlock()
+					// otelCtx is used to store the main subscribe span to the other child spans.
+					// We want this to derive from the main subscribe ctx, so the iterator remains
+					// cancellable.
+					// We cannot reassign into ctx2 directly since this ctx should be different per
+					// batch of messages and also per message iterator.
+					otelCtx := ctx2
+					// Stores the concurrency control span, which starts before the call to
+					// acquire is made, and ends immediately after. This used to be called
+					// flow control, but is more accurately describes as concurrency control
+					// since this limits the number of simultaneous callback invocations.
+					var ccSpan trace.Span
+					if iter.enableTracing {
+						c, ok := iter.activeSpans.Load(ackh.ackID)
+						if ok {
+							sc := c.(trace.Span)
+							otelCtx = trace.ContextWithSpanContext(otelCtx, sc.SpanContext())
+							// Don't override otelCtx here since the parent of subsequent spans
+							// should be the subscribe span still.
+							_, ccSpan = startSpan(otelCtx, ccSpanName, "")
+						}
+					}
+					// Use the original user defined ctx for this operation so the acquire operation can be cancelled.
 					if err := fc.acquire(ctx, len(msg.Data)); err != nil {
 						// TODO(jba): test that these "orphaned" messages are nacked immediately when ctx is done.
 						for _, m := range msgs[i:] {
@@ -1324,28 +1451,56 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 						// Return nil if the context is done, not err.
 						return nil
 					}
-					iter.eoMu.RLock()
-					ackh, _ := msgAckHandler(msg, iter.enableExactlyOnceDelivery)
-					iter.eoMu.RUnlock()
-					old := ackh.doneFunc
-					msgLen := len(msg.Data)
-					ackh.doneFunc = func(ackID string, ack bool, r *ipubsub.AckResult, receiveTime time.Time) {
-						defer fc.release(ctx, msgLen)
-						old(ackID, ack, r, receiveTime)
+					if iter.enableTracing {
+						ccSpan.End()
 					}
+
 					wg.Add(1)
-					// Make sure the subscription has ordering enabled before adding to scheduler.
+					// Only schedule messages in order if an ordering key is present and the subscriber client
+					// received the ordering flag from a Streaming Pull response.
 					var key string
-					if s.enableOrdering {
+					iter.orderingMu.RLock()
+					if iter.enableOrdering {
 						key = msg.OrderingKey
 					}
 					// TODO(deklerk): Can we have a generic handler at the
 					// constructor level?
+					var schedulerSpan trace.Span
+					if iter.enableTracing {
+						_, schedulerSpan = startSpan(otelCtx, scheduleSpanName, "")
+					}
+					iter.orderingMu.RUnlock()
+					msgLen := len(msg.Data)
 					if err := sched.Add(key, msg, func(msg interface{}) {
+						m := msg.(*Message)
 						defer wg.Done()
-						f(ctx2, msg.(*Message))
+						var ps trace.Span
+						if iter.enableTracing {
+							schedulerSpan.End()
+							// Start the process span, and augment the done function to end this span and record events.
+							otelCtx, ps = startSpan(otelCtx, processSpanName, s.ID())
+							old := ackh.doneFunc
+							ackh.doneFunc = func(ackID string, ack bool, r *ipubsub.AckResult, receiveTime time.Time) {
+								var eventString string
+								if ack {
+									eventString = eventAckCalled
+								} else {
+									eventString = eventNackCalled
+								}
+								ps.AddEvent(eventString)
+								// This is the process operation, but is currently named "Deliver". Replace once
+								// updated here: https://github.com/open-telemetry/opentelemetry-go/blob/eb6bd28f3288b173d148c67f9ed45390594abdc2/semconv/v1.26.0/attribute_group.go#L5240
+								ps.SetAttributes(semconv.MessagingOperationTypeDeliver)
+								ps.End()
+								old(ackID, ack, r, receiveTime)
+							}
+						}
+						defer fc.release(ctx, msgLen)
+						f(otelCtx, m)
 					}); err != nil {
 						wg.Done()
+						// TODO(hongalex): propagate these errors to an otel span.
+
 						// If there are any errors with scheduling messages,
 						// nack them so they can be redelivered.
 						msg.Nack()
@@ -1378,20 +1533,6 @@ func (s *Subscription) Receive(ctx context.Context, f func(context.Context, *Mes
 	return group.Wait()
 }
 
-// checkOrdering calls Config to check theEnableMessageOrdering field.
-// If this call fails (e.g. because the service account doesn't have
-// the roles/viewer or roles/pubsub.viewer role) we will assume
-// EnableMessageOrdering to be true.
-// See: https://github.com/googleapis/google-cloud-go/issues/3884
-func (s *Subscription) checkOrdering(ctx context.Context) {
-	cfg, err := s.Config(ctx)
-	if err != nil {
-		s.enableOrdering = true
-	} else {
-		s.enableOrdering = cfg.EnableMessageOrdering
-	}
-}
-
 type pullOptions struct {
 	maxExtension       time.Duration // the maximum time to extend a message's ack deadline in total
 	maxExtensionPeriod time.Duration // the maximum time to extend a message's ack deadline per modack rpc
@@ -1403,4 +1544,5 @@ type pullOptions struct {
 	maxOutstandingMessages int
 	maxOutstandingBytes    int
 	useLegacyFlowControl   bool
+	clientID               string
 }

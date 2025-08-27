@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 type param struct {
@@ -103,7 +103,12 @@ type openapiScopesObject map[string]string
 type openapiSecurityRequirementObject map[string][]string
 
 // http://swagger.io/specification/#pathsObject
-type openapiPathsObject map[string]openapiPathItemObject
+type openapiPathsObject []pathData
+
+type pathData struct {
+	Path           string
+	PathItemObject openapiPathItemObject
+}
 
 // http://swagger.io/specification/#pathItemObject
 type openapiPathItemObject struct {
@@ -146,6 +151,7 @@ type openapiParameterObject struct {
 	Required         bool                `json:"required" yaml:"required"`
 	Type             string              `json:"type,omitempty" yaml:"type,omitempty"`
 	Format           string              `json:"format,omitempty" yaml:"format,omitempty"`
+	UniqueItems      bool                `json:"uniqueItems,omitempty" yaml:"uniqueItems,omitempty"`
 	Items            *openapiItemsObject `json:"items,omitempty" yaml:"items,omitempty"`
 	Enum             interface{}         `json:"enum,omitempty" yaml:"enum,omitempty"`
 	CollectionFormat string              `json:"collectionFormat,omitempty" yaml:"collectionFormat,omitempty"`

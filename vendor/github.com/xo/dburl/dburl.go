@@ -1,8 +1,8 @@
-// Package dburl provides a standard, URL style mechanism for parsing and
-// opening SQL database connection strings for Go. Provides standardized way to
-// parse and open URLs for popular databases PostgreSQL, MySQL, SQLite3, Oracle
-// Database, Microsoft SQL Server, in addition to most other SQL databases with
-// a publicly available Go driver.
+// Package dburl provides a standard, [net/url.URL] style mechanism for parsing
+// and opening SQL database connection strings for Go. Provides standardized
+// way to parse and open [URL]'s for popular databases PostgreSQL, MySQL, SQLite3,
+// Oracle Database, Microsoft SQL Server, in addition to most other SQL
+// databases with a publicly available Go driver.
 //
 // See the [package documentation README section] for more details.
 //
@@ -11,26 +11,53 @@ package dburl
 
 import (
 	"database/sql"
+	"fmt"
+	"io/fs"
 	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// Open takes a URL like "protocol+transport://user:pass@host/dbname?option1=a&option2=b"
-// and opens a standard sql.DB connection.
+// ResolveSchemeType is a configuration setting to open paths on disk using
+// [SchemeType], [Stat], and [OpenFile]. Set this to false in an `init()` func
+// in order to disable this behavior.
+var ResolveSchemeType = true
+
+// Open takes a URL string, also known as a DSN, in the form of
+// "protocol+transport://user:pass@host/dbname?option1=a&option2=b" and opens a
+// standard [sql.DB] connection.
 //
-// See [Parse] for information on formatting URLs to work properly with Open.
+// See [Parse] for information on formatting URL strings to work properly with Open.
 func Open(urlstr string) (*sql.DB, error) {
 	u, err := Parse(urlstr)
 	if err != nil {
 		return nil, err
 	}
-	return sql.Open(u.Driver, u.DSN)
+	driver := u.Driver
+	if u.GoDriver != "" {
+		driver = u.GoDriver
+	}
+	return sql.Open(driver, u.DSN)
+}
+
+// OpenMap takes a map of URL components and opens a standard [sql.DB] connection.
+//
+// See [BuildURL] for information on the recognized map components.
+func OpenMap(components map[string]any) (*sql.DB, error) {
+	urlstr, err := BuildURL(components)
+	if err != nil {
+		return nil, err
+	}
+	return Open(urlstr)
 }
 
 // URL wraps the standard [net/url.URL] type, adding OriginalScheme, Transport,
 // Driver, Unaliased, and DSN strings.
 type URL struct {
-	// URL is the base net/url/URL.
+	// URL is the base [net/url.URL].
 	url.URL
 	// OriginalScheme is the original parsed scheme (ie, "sq", "mysql+unix", "sap", etc).
 	OriginalScheme string
@@ -38,22 +65,26 @@ type URL struct {
 	// "unix", ...), if provided.
 	Transport string
 	// Driver is the non-aliased SQL driver name that should be used in a call
-	// to sql/Open.
+	// to [sql.Open].
 	Driver string
-	// Unaliased is the unaliased driver name.
-	Unaliased string
+	// GoDriver is the Go SQL driver name to use when opening a connection to
+	// the database. Used by Microsoft SQL Server's azuresql:// URLs, as the
+	// wire-compatible alias style uses a different syntax style.
+	GoDriver string
+	// UnaliasedDriver is the unaliased driver name.
+	UnaliasedDriver string
 	// DSN is the built connection "data source name" that can be used in a
-	// call to sql/Open.
+	// call to [sql.Open].
 	DSN string
 	// hostPortDB will be set by Gen*() funcs after determining the host, port,
 	// database.
 	//
-	// when empty, indicates that these values are not special, and can be
+	// When empty, indicates that these values are not special, and can be
 	// retrieved as the host, port, and path[1:] as usual.
 	hostPortDB []string
 }
 
-// Parse parses a URL, similar to the standard [net/url.Parse].
+// Parse parses a URL string, similar to the standard [net/url.Parse].
 //
 // Handles parsing OriginalScheme, Transport, Driver, Unaliased, and DSN
 // fields.
@@ -64,10 +95,15 @@ type URL struct {
 func Parse(urlstr string) (*URL, error) {
 	// parse url
 	v, err := url.Parse(urlstr)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if v.Scheme == "" {
+	case v.Scheme == "":
+		if ResolveSchemeType {
+			if typ, err := SchemeType(urlstr); err == nil {
+				return Parse(typ + ":" + urlstr)
+			}
+		}
 		return nil, ErrInvalidDatabaseScheme
 	}
 	// create url
@@ -85,35 +121,40 @@ func Parse(urlstr string) (*URL, error) {
 	}
 	// get dsn generator
 	scheme, ok := schemeMap[u.Scheme]
-	if !ok {
+	switch {
+	case !ok:
 		return nil, ErrUnknownDatabaseScheme
-	}
-	// if scheme does not understand opaque URLs, retry parsing after building
-	// fully qualified URL
-	if !scheme.Opaque && u.Opaque != "" {
-		var q string
-		if u.RawQuery != "" {
-			q = "?" + u.RawQuery
+	case scheme.Driver == "file":
+		// determine scheme for file
+		s := u.opaqueOrPath()
+		switch {
+		case u.Transport != "tcp",
+			strings.Contains(u.OriginalScheme, "+"):
+			return nil, ErrInvalidTransportProtocol
+		case s == "":
+			return nil, ErrMissingPath
+		case ResolveSchemeType:
+			if typ, err := SchemeType(s); err == nil {
+				return Parse(typ + "://" + u.buildOpaque())
+			}
 		}
-		var f string
-		if u.Fragment != "" {
-			f = "#" + u.Fragment
-		}
-		return Parse(u.OriginalScheme + "://" + u.Opaque + q + f)
-	}
-	if scheme.Opaque && u.Opaque == "" {
+		return nil, ErrUnknownFileExtension
+	case !scheme.Opaque && u.Opaque != "":
+		// if scheme does not understand opaque URLs, retry parsing after
+		// building fully qualified URL
+		return Parse(u.OriginalScheme + "://" + u.buildOpaque())
+	case scheme.Opaque && u.Opaque == "":
 		// force Opaque
 		u.Opaque, u.Host, u.Path, u.RawPath = u.Host+u.Path, "", "", ""
-	} else if u.Host == "." || (u.Host == "" && strings.TrimPrefix(u.Path, "/") != "") {
+	case u.Host == ".", u.Host == "" && strings.TrimPrefix(u.Path, "/") != "":
 		// force unix proto
 		u.Transport = "unix"
 	}
-	// check proto
+	// check transport
 	if checkTransport || u.Transport != "tcp" {
-		if scheme.Transport == TransportNone {
-			return nil, ErrInvalidTransportProtocol
-		}
 		switch {
+		case scheme.Transport == TransportNone:
+			return nil, ErrInvalidTransportProtocol
 		case scheme.Transport&TransportAny != 0 && u.Transport != "",
 			scheme.Transport&TransportTCP != 0 && u.Transport == "tcp",
 			scheme.Transport&TransportUDP != 0 && u.Transport == "udp",
@@ -123,15 +164,39 @@ func Parse(urlstr string) (*URL, error) {
 		}
 	}
 	// set driver
-	u.Driver, u.Unaliased = scheme.Driver, scheme.Driver
+	u.Driver, u.UnaliasedDriver = scheme.Driver, scheme.Driver
 	if scheme.Override != "" {
 		u.Driver = scheme.Override
 	}
 	// generate dsn
-	if u.DSN, err = scheme.Generator(u); err != nil {
+	if u.DSN, u.GoDriver, err = scheme.Generator(u); err != nil {
 		return nil, err
 	}
 	return u, nil
+}
+
+// FromMap creates a [URL] using the mapped components.
+//
+// Recognized components are:
+//
+//	protocol, proto, scheme
+//	transport
+//	username, user
+//	password, pass
+//	hostname, host
+//	port
+//	path, file, opaque
+//	database, dbname, db
+//	instance
+//	parameters, params, options, opts, query, q
+//
+// See [BuildURL] for more information.
+func FromMap(components map[string]any) (*URL, error) {
+	urlstr, err := BuildURL(components)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(urlstr)
 }
 
 // String satisfies the [fmt.Stringer] interface.
@@ -185,7 +250,7 @@ func (u *URL) Short() string {
 // Normalize returns the driver, host, port, database, and user name of a URL,
 // joined with sep, populating blank fields with empty.
 func (u *URL) Normalize(sep, empty string, cut int) string {
-	s := []string{u.Unaliased, "", "", "", ""}
+	s := []string{u.UnaliasedDriver, "", "", "", ""}
 	if u.Transport != "tcp" && u.Transport != "unix" {
 		s[0] += "+" + u.Transport
 	}
@@ -221,6 +286,63 @@ func (u *URL) Normalize(sep, empty string, cut int) string {
 	return strings.Join(s, sep)
 }
 
+// buildOpaque builds a opaque path.
+func (u *URL) buildOpaque() string {
+	var up string
+	if u.User != nil {
+		up = u.User.String() + "@"
+	}
+	var q string
+	if u.RawQuery != "" {
+		q = "?" + u.RawQuery
+	}
+	var f string
+	if u.Fragment != "" {
+		f = "#" + u.Fragment
+	}
+	return up + u.opaqueOrPath() + q + f
+}
+
+// opaqueOrPath returns the opaque or path value.
+func (u *URL) opaqueOrPath() string {
+	if u.Opaque != "" {
+		return u.Opaque
+	}
+	return u.Path
+}
+
+// SchemeType returns the scheme type for a path.
+func SchemeType(name string) (string, error) {
+	// try to resolve the path on unix systems
+	if runtime.GOOS != "windows" {
+		if typ, ok := resolveType(name); ok {
+			return typ, nil
+		}
+	}
+	if f, err := OpenFile(name); err == nil {
+		defer f.Close()
+		// file exists, match header
+		buf := make([]byte, 64)
+		if n, _ := f.Read(buf); n == 0 {
+			return "sqlite3", nil
+		}
+		for _, typ := range fileTypes {
+			if typ.f(buf) {
+				return typ.driver, nil
+			}
+		}
+		return "", ErrUnknownFileHeader
+	}
+	// doesn't exist, match file extension
+	ext := filepath.Ext(name)
+	for _, typ := range fileTypes {
+		if typ.ext.MatchString(ext) {
+			return typ.driver, nil
+		}
+	}
+	return "", ErrUnknownFileExtension
+}
+
 // Error is an error.
 type Error string
 
@@ -235,6 +357,10 @@ const (
 	ErrInvalidDatabaseScheme Error = "invalid database scheme"
 	// ErrUnknownDatabaseScheme is the unknown database type error.
 	ErrUnknownDatabaseScheme Error = "unknown database scheme"
+	// ErrUnknownFileHeader is the unknown file header error.
+	ErrUnknownFileHeader Error = "unknown file header"
+	// ErrUnknownFileExtension is the unknown file extension error.
+	ErrUnknownFileExtension Error = "unknown file extension"
 	// ErrInvalidTransportProtocol is the invalid transport protocol error.
 	ErrInvalidTransportProtocol Error = "invalid transport protocol"
 	// ErrRelativePathNotSupported is the relative paths not supported error.
@@ -245,4 +371,198 @@ const (
 	ErrMissingPath Error = "missing path"
 	// ErrMissingUser is the missing user error.
 	ErrMissingUser Error = "missing user"
+	// ErrInvalidQuery is the invalid query error.
+	ErrInvalidQuery Error = "invalid query"
 )
+
+// Stat is the default stat func.
+//
+// Used internally to stat files, and used when generating the DSNs for
+// postgres://, mysql://, file:// schemes, and opaque [URL]'s.
+var Stat = func(name string) (fs.FileInfo, error) {
+	return fs.Stat(os.DirFS(filepath.Dir(name)), filepath.Base(name))
+}
+
+// OpenFile is the default open file func.
+//
+// Used internally to read file headers.
+var OpenFile = func(name string) (fs.File, error) {
+	return os.OpenFile(name, os.O_RDONLY, 0)
+}
+
+// BuildURL creates a dsn using the mapped components.
+//
+// Recognized components are:
+//
+//	protocol, proto, scheme
+//	transport
+//	username, user
+//	password, pass
+//	hostname, host
+//	port
+//	path, file, opaque
+//	database, dbname, db
+//	instance
+//	parameters, params, options, opts, query, q
+//
+// See [BuildURL] for more information.
+func BuildURL(components map[string]any) (string, error) {
+	if components == nil {
+		return "", ErrInvalidDatabaseScheme
+	}
+	var urlstr string
+	if proto, ok := getComponent(components, "protocol", "proto", "scheme"); ok {
+		if transport, ok := getComponent(components, "transport"); ok {
+			proto += "+" + transport
+		}
+		urlstr = proto + ":"
+	}
+	if host, ok := getComponent(components, "hostname", "host"); ok {
+		hostinfo := url.QueryEscape(host)
+		if port, ok := getComponent(components, "port"); ok {
+			hostinfo += ":" + port
+		}
+		var userinfo string
+		if user, ok := getComponent(components, "username", "user"); ok {
+			userinfo += url.QueryEscape(user)
+			if pass, ok := getComponent(components, "password", "pass"); ok {
+				userinfo += ":" + url.QueryEscape(pass)
+			}
+			hostinfo = userinfo + "@" + hostinfo
+		}
+		urlstr += "//" + hostinfo
+	}
+	if pathstr, ok := getComponent(components, "path", "file", "opaque"); ok {
+		if urlstr == "" {
+			urlstr += "file:"
+		}
+		urlstr += pathstr
+	} else {
+		var v []string
+		if instance, ok := getComponent(components, "instance"); ok {
+			v = append(v, url.PathEscape(instance))
+		}
+		if dbname, ok := getComponent(components, "database", "dbname", "db"); ok {
+			v = append(v, url.PathEscape(dbname))
+		}
+		if len(v) != 0 {
+			if s := path.Join(v...); s != "" {
+				urlstr += "/" + s
+			}
+		}
+	}
+	if v, ok := getFirst(components, "parameters", "params", "options", "opts", "query", "q"); ok {
+		switch z := v.(type) {
+		case string:
+			if z != "" {
+				urlstr += "?" + z
+			}
+		case map[string]any:
+			q := url.Values{}
+			for k, v := range z {
+				q.Set(k, fmt.Sprintf("%v", v))
+			}
+			if s := q.Encode(); s != "" {
+				urlstr += "?" + s
+			}
+		default:
+			return "", ErrInvalidQuery
+		}
+	}
+	return urlstr, nil
+}
+
+// resolveType tries to resolve a path to a Unix domain socket or directory.
+func resolveType(s string) (string, bool) {
+	if i := strings.LastIndex(s, "?"); i != -1 {
+		if _, err := Stat(s[:i]); err == nil {
+			s = s[:i]
+		}
+	}
+	dir := s
+	for dir != "" && dir != "/" && dir != "." {
+		// chop off :4444 port
+		i, j := strings.LastIndex(dir, ":"), strings.LastIndex(dir, "/")
+		if i != -1 && i > j {
+			dir = dir[:i]
+		}
+		switch fi, err := Stat(dir); {
+		case err == nil && fi.IsDir():
+			return "postgres", true
+		case err == nil && fi.Mode()&fs.ModeSocket != 0:
+			return "mysql", true
+		case err == nil:
+			return "", false
+		}
+		if j != -1 {
+			dir = dir[:j]
+		} else {
+			dir = ""
+		}
+	}
+	return "", false
+}
+
+// resolveSocket tries to resolve a path to a Unix domain socket based on the
+// form "/path/to/socket/dbname" returning either the original path and the
+// empty string, or the components "/path/to/socket" and "dbname", when
+// /path/to/socket/dbname is reported by Stat as a socket.
+func resolveSocket(s string) (string, string) {
+	dir, dbname := s, ""
+	for dir != "" && dir != "/" && dir != "." {
+		if mode(dir)&fs.ModeSocket != 0 {
+			return dir, dbname
+		}
+		dir, dbname = path.Dir(dir), path.Base(dir)
+	}
+	return s, ""
+}
+
+// resolveDir resolves a directory with a :port list.
+func resolveDir(s string) (string, string, string) {
+	dir := s
+	for dir != "" && dir != "/" && dir != "." {
+		port := ""
+		i, j := strings.LastIndex(dir, ":"), strings.LastIndex(dir, "/")
+		if i != -1 && i > j {
+			port, dir = dir[i+1:], dir[:i]
+		}
+		if mode(dir)&fs.ModeDir != 0 {
+			dbname := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(s, dir), ":"+port), "/")
+			return dir, port, dbname
+		}
+		if j != -1 {
+			dir = dir[:j]
+		} else {
+			dir = ""
+		}
+	}
+	return s, "", ""
+}
+
+// mode returns the mode of the path.
+func mode(s string) os.FileMode {
+	if fi, err := Stat(s); err == nil {
+		return fi.Mode()
+	}
+	return 0
+}
+
+// getComponent returns the first defined component in the map.
+func getComponent(m map[string]any, v ...string) (string, bool) {
+	if z, ok := getFirst(m, v...); ok {
+		str := fmt.Sprintf("%v", z)
+		return str, str != ""
+	}
+	return "", false
+}
+
+// getFirst returns the first value in the map.
+func getFirst(m map[string]any, v ...string) (any, bool) {
+	for _, s := range v {
+		if z, ok := m[s]; ok {
+			return z, ok
+		}
+	}
+	return nil, false
+}
