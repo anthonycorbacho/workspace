@@ -76,13 +76,13 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 		if a.Approx {
 			args = append(args, "maxlen", "~", a.MaxLen)
 		} else {
-			args = append(args, "maxlen", a.MaxLen)
+			args = append(args, "maxlen", "=", a.MaxLen)
 		}
 	case a.MinID != "":
 		if a.Approx {
 			args = append(args, "minid", "~", a.MinID)
 		} else {
-			args = append(args, "minid", a.MinID)
+			args = append(args, "minid", "=", a.MinID)
 		}
 	}
 	if a.Limit > 0 {
@@ -263,6 +263,7 @@ type XReadGroupArgs struct {
 	Count    int64
 	Block    time.Duration
 	NoAck    bool
+	Claim    time.Duration // Claim idle pending entries older than this duration
 }
 
 func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSliceCmd {
@@ -281,6 +282,10 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	if a.NoAck {
 		args = append(args, "noack")
 		keyPos++
+	}
+	if a.Claim > 0 {
+		args = append(args, "claim", int64(a.Claim/time.Millisecond))
+		keyPos += 2
 	}
 	args = append(args, "streams")
 	keyPos++
@@ -424,6 +429,8 @@ func (c cmdable) xTrim(
 	args = append(args, "xtrim", key, strategy)
 	if approx {
 		args = append(args, "~")
+	} else {
+		args = append(args, "=")
 	}
 	args = append(args, threshold)
 	if limit > 0 {
@@ -461,6 +468,8 @@ func (c cmdable) xTrimMode(
 	args = append(args, "xtrim", key, strategy)
 	if approx {
 		args = append(args, "~")
+	} else {
+		args = append(args, "=")
 	}
 	args = append(args, threshold)
 	if limit > 0 {

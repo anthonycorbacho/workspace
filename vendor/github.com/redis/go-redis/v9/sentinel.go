@@ -17,6 +17,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/maintnotifications"
+	"github.com/redis/go-redis/v9/push"
 )
 
 //------------------------------------------------------------------------------
@@ -62,6 +64,8 @@ type FailoverOptions struct {
 	Protocol int
 	Username string
 	Password string
+
+	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -85,7 +89,18 @@ type FailoverOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout           time.Duration
+	DialTimeout time.Duration
+
+	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	//
+	// default: 5
+	DialerRetries int
+
+	// DialerRetryTimeout is the backoff duration between retry attempts.
+	//
+	// default: 100 milliseconds
+	DialerRetryTimeout time.Duration
+
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
@@ -94,14 +109,14 @@ type FailoverOptions struct {
 	// Larger buffers can improve performance for commands that return large responses.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
 	// Larger buffers can improve performance for large pipelines and commands with many arguments.
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 256KiB (262144 bytes)
+	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
 	PoolFIFO bool
@@ -111,8 +126,9 @@ type FailoverOptions struct {
 	MinIdleConns    int
 	MaxIdleConns    int
 	MaxActiveConns  int
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
+	ConnMaxLifetimeJitter time.Duration
 
 	TLSConfig *tls.Config
 
@@ -129,7 +145,22 @@ type FailoverOptions struct {
 	DisableIdentity bool
 
 	IdentitySuffix string
-	UnstableResp3  bool
+
+	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
+	// When a node is marked as failing, it will be avoided for this duration.
+	// Only applies to failover cluster clients. Default is 15 seconds.
+	FailingTimeoutSeconds int
+
+	UnstableResp3 bool
+
+	// MaintNotificationsConfig is not supported for FailoverClients at the moment
+	// MaintNotificationsConfig provides custom configuration for maintnotifications upgrades.
+	// When MaintNotificationsConfig.Mode is not "disabled", the client will handle
+	// upgrade notifications gracefully and manage connection/pool state transitions
+	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, maintnotifications upgrades are disabled.
+	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
+	//MaintNotificationsConfig *maintnotifications.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -156,6 +187,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		WriteBufferSize: opt.WriteBufferSize,
 
 		DialTimeout:           opt.DialTimeout,
+		DialerRetries:         opt.DialerRetries,
+		DialerRetryTimeout:    opt.DialerRetryTimeout,
 		ReadTimeout:           opt.ReadTimeout,
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
@@ -166,8 +199,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
 		MaxActiveConns:  opt.MaxActiveConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,
 
@@ -176,6 +210,10 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		IdentitySuffix: opt.IdentitySuffix,
 		UnstableResp3:  opt.UnstableResp3,
+
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
 	}
 }
 
@@ -195,10 +233,13 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
-		ReadBufferSize:  opt.ReadBufferSize,
-		WriteBufferSize: opt.WriteBufferSize,
+		// The sentinel client uses a 4KiB read/write buffer size.
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
 
 		DialTimeout:           opt.DialTimeout,
+		DialerRetries:         opt.DialerRetries,
+		DialerRetryTimeout:    opt.DialerRetryTimeout,
 		ReadTimeout:           opt.ReadTimeout,
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
@@ -209,8 +250,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MinIdleConns:    opt.MinIdleConns,
 		MaxIdleConns:    opt.MaxIdleConns,
 		MaxActiveConns:  opt.MaxActiveConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,
 
@@ -219,6 +261,10 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 		IdentitySuffix: opt.IdentitySuffix,
 		UnstableResp3:  opt.UnstableResp3,
+
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
 	}
 }
 
@@ -238,6 +284,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		MaxRedirects: opt.MaxRetries,
 
+		ReadOnly:       opt.ReplicaOnly,
 		RouteByLatency: opt.RouteByLatency,
 		RouteRandomly:  opt.RouteRandomly,
 
@@ -263,10 +310,14 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIdentity:  opt.DisableIdentity,
-		DisableIndentity: opt.DisableIndentity,
+		DisableIdentity:       opt.DisableIdentity,
+		DisableIndentity:      opt.DisableIndentity,
+		IdentitySuffix:        opt.IdentitySuffix,
+		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
 
-		IdentitySuffix: opt.IdentitySuffix,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
 	}
 }
 
@@ -375,6 +426,9 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
+	if q.has("conn_max_lifetime_jitter") {
+		o.ConnMaxLifetimeJitter = util.MinDuration(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
+	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.DisableIdentity = q.bool("disableIdentity")
@@ -446,8 +500,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	var connPool *pool.ConnPool
-
 	rdb := &Client{
 		baseClient: &baseClient{
 			opt: opt,
@@ -455,15 +507,29 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	connPool = newConnPool(opt, rdb.dialHook)
-	rdb.connPool = connPool
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for RESP2 connections
+	rdb.pushProcessor = initializePushProcessor(opt)
+
+	var err error
+	rdb.connPool, err = newConnPool(opt, rdb.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
+	}
+	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
+
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
-		_ = connPool.Filter(func(cn *pool.Conn) bool {
-			return cn.RemoteAddr().String() != addr
-		})
+		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
+			_ = connPool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
 	}
 	failover.mu.Unlock()
 
@@ -521,13 +587,38 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor for Sentinel clients
+	c.pushProcessor = NewVoidPushNotificationProcessor()
+
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook)
+	var err error
+	c.connPool, err = newConnPool(opt, c.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
+	}
+	c.pubSubPool, err = newPubSubPool(opt, c.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
 
 	return c
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
@@ -539,13 +630,31 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
+			if err != nil {
+				return nil, err
+			}
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				return nil, err
+			}
+			// Track connection in PubSubPool
+			c.pubSubPool.TrackConn(cn)
+			return cn, nil
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			// Untrack connection from PubSubPool
+			c.pubSubPool.UntrackConn(cn)
+			_ = cn.Close()
+			return nil
+		},
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
+
 	return pubsub
 }
 
@@ -768,6 +877,11 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}
 	}
 
+	// short circuit if no sentinels configured
+	if len(c.sentinelAddrs) == 0 {
+		return "", errors.New("redis: no sentinels configured")
+	}
+
 	var (
 		masterAddr string
 		wg         sync.WaitGroup
@@ -815,10 +929,12 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 }
 
 func joinErrors(errs []error) string {
+	if len(errs) == 0 {
+		return ""
+	}
 	if len(errs) == 1 {
 		return errs[0].Error()
 	}
-
 	b := []byte(errs[0].Error())
 	for _, err := range errs[1:] {
 		b = append(b, '\n')

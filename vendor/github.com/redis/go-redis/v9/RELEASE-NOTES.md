@@ -1,5 +1,317 @@
 # Release Notes
 
+# 9.17.3 (2026-01-25)
+
+## 🐛 Bug Fixes
+
+- **Connection Pool**: Fixed zombie `wantConn` elements accumulation in `wantConnQueue` that could cause resource leaks in high concurrency scenarios with dial failures ([#3680](https://github.com/redis/go-redis/pull/3680)) by [@cyningsun](https://github.com/cyningsun)
+- **Stream Commands**: Fixed `XADD` and `XTRIM` commands to use exact threshold (`=`) when `Approx` is false, ensuring precise stream trimming behavior ([#3684](https://github.com/redis/go-redis/pull/3684)) by [@ndyakov](https://github.com/ndyakov)
+- **Connection Pool**: Added `ConnMaxLifetimeJitter` configuration to distribute connection expiration times and prevent the thundering herd problem when many connections expire simultaneously ([#3666](https://github.com/redis/go-redis/pull/3666)) by [@cyningsun](https://github.com/cyningsun)
+- **Client Options**: Added `DialerRetries` and `DialerRetryTimeout` fields to `ClusterOptions`, `RingOptions`, and `FailoverOptions` to allow configuring connection retry behavior for cluster, ring, and sentinel clients ([#3686](https://github.com/redis/go-redis/pull/3686)) by [@naveenchander30](https://github.com/naveenchander30)
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@cyningsun](https://github.com/cyningsun), [@naveenchander30](https://github.com/naveenchander30), and [@ndyakov](https://github.com/ndyakov)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.17.2...v9.17.3
+
+# 9.17.2 (2025-12-01)
+
+## 🐛 Bug Fixes
+
+- **Connection Pool**: Fixed critical race condition in turn management that could cause connection leaks when dial goroutines complete after request timeout ([#3626](https://github.com/redis/go-redis/pull/3626)) by [@cyningsun](https://github.com/cyningsun)
+- **Context Timeout**: Improved context timeout calculation to use minimum of remaining time and DialTimeout, preventing goroutines from waiting longer than necessary ([#3626](https://github.com/redis/go-redis/pull/3626)) by [@cyningsun](https://github.com/cyningsun)
+
+## 🧰 Maintenance
+
+- chore(deps): bump rojopolis/spellcheck-github-actions from 0.54.0 to 0.55.0 ([#3627](https://github.com/redis/go-redis/pull/3627))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@cyningsun](https://github.com/cyningsun) and [@ndyakov](https://github.com/ndyakov)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.17.1...v9.17.2
+
+# 9.17.1 (2025-11-25)
+
+## 🐛 Bug Fixes
+
+- add wait to keyless commands list ([#3615](https://github.com/redis/go-redis/pull/3615)) by [@marcoferrer](https://github.com/marcoferrer)
+- fix(time): remove cached time optimization ([#3611](https://github.com/redis/go-redis/pull/3611)) by [@ndyakov](https://github.com/ndyakov)
+
+## 🧰 Maintenance
+
+- chore(deps): bump golangci/golangci-lint-action from 9.0.0 to 9.1.0 ([#3609](https://github.com/redis/go-redis/pull/3609))
+- chore(deps): bump actions/checkout from 5 to 6 ([#3610](https://github.com/redis/go-redis/pull/3610))
+- chore(script): fix help call in tag.sh ([#3606](https://github.com/redis/go-redis/pull/3606)) by [@ndyakov](https://github.com/ndyakov)
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@marcoferrer](https://github.com/marcoferrer) and [@ndyakov](https://github.com/ndyakov)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.17.0...v9.17.1
+
+# 9.17.0 (2025-11-19)
+
+## 🚀 Highlights
+
+### Redis 8.4 Support
+Added support for Redis 8.4, including new commands and features ([#3572](https://github.com/redis/go-redis/pull/3572))
+
+### Typed Errors
+Introduced typed errors for better error handling using `errors.As` instead of string checks. Errors can now be wrapped and set to commands in hooks without breaking library functionality ([#3602](https://github.com/redis/go-redis/pull/3602))
+
+### New Commands
+- **CAS/CAD Commands**: Added support for Compare-And-Set/Compare-And-Delete operations with conditional matching (`IFEQ`, `IFNE`, `IFDEQ`, `IFDNE`) ([#3583](https://github.com/redis/go-redis/pull/3583), [#3595](https://github.com/redis/go-redis/pull/3595))
+- **MSETEX**: Atomically set multiple key-value pairs with expiration options and conditional modes ([#3580](https://github.com/redis/go-redis/pull/3580))
+- **XReadGroup CLAIM**: Consume both incoming and idle pending entries from streams in a single call ([#3578](https://github.com/redis/go-redis/pull/3578))
+- **ACL Commands**: Added `ACLGenPass`, `ACLUsers`, and `ACLWhoAmI` ([#3576](https://github.com/redis/go-redis/pull/3576))
+- **SLOWLOG Commands**: Added `SLOWLOG LEN` and `SLOWLOG RESET` ([#3585](https://github.com/redis/go-redis/pull/3585))
+- **LATENCY Commands**: Added `LATENCY LATEST` and `LATENCY RESET` ([#3584](https://github.com/redis/go-redis/pull/3584))
+
+### Search & Vector Improvements
+- **Hybrid Search**: Added  **EXPERIMENTAL** support for the new `FT.HYBRID` command ([#3573](https://github.com/redis/go-redis/pull/3573))
+- **Vector Range**: Added `VRANGE` command for vector sets ([#3543](https://github.com/redis/go-redis/pull/3543))
+- **FT.INFO Enhancements**: Added vector-specific attributes in FT.INFO response ([#3596](https://github.com/redis/go-redis/pull/3596))
+
+### Connection Pool Improvements
+- **Improved Connection Success Rate**: Implemented FIFO queue-based fairness and context pattern for connection creation to prevent premature cancellation under high concurrency ([#3518](https://github.com/redis/go-redis/pull/3518))
+- **Connection State Machine**: Resolved race conditions and improved pool performance with proper state tracking ([#3559](https://github.com/redis/go-redis/pull/3559))
+- **Pool Performance**: Significant performance improvements with faster semaphores, lockless hook manager, and reduced allocations (47-67% faster Get/Put operations) ([#3565](https://github.com/redis/go-redis/pull/3565))
+
+### Metrics & Observability
+- **Canceled Metric Attribute**: Added 'canceled' metrics attribute to distinguish context cancellation errors from other errors ([#3566](https://github.com/redis/go-redis/pull/3566))
+
+## ✨ New Features
+
+- Typed errors with wrapping support ([#3602](https://github.com/redis/go-redis/pull/3602)) by [@ndyakov](https://github.com/ndyakov)
+- CAS/CAD commands (marked as experimental) ([#3583](https://github.com/redis/go-redis/pull/3583), [#3595](https://github.com/redis/go-redis/pull/3595)) by [@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis)
+- MSETEX command support ([#3580](https://github.com/redis/go-redis/pull/3580)) by [@ofekshenawa](https://github.com/ofekshenawa)
+- XReadGroup CLAIM argument ([#3578](https://github.com/redis/go-redis/pull/3578)) by [@ofekshenawa](https://github.com/ofekshenawa)
+- ACL commands: GenPass, Users, WhoAmI ([#3576](https://github.com/redis/go-redis/pull/3576)) by [@destinyoooo](https://github.com/destinyoooo)
+- SLOWLOG commands: LEN, RESET ([#3585](https://github.com/redis/go-redis/pull/3585)) by [@destinyoooo](https://github.com/destinyoooo)
+- LATENCY commands: LATEST, RESET ([#3584](https://github.com/redis/go-redis/pull/3584)) by [@destinyoooo](https://github.com/destinyoooo)
+- Hybrid search command (FT.HYBRID) ([#3573](https://github.com/redis/go-redis/pull/3573)) by [@htemelski-redis](https://github.com/htemelski-redis)
+- Vector range command (VRANGE) ([#3543](https://github.com/redis/go-redis/pull/3543)) by [@cxljs](https://github.com/cxljs)
+- Vector-specific attributes in FT.INFO ([#3596](https://github.com/redis/go-redis/pull/3596)) by [@ndyakov](https://github.com/ndyakov)
+- Improved connection pool success rate with FIFO queue ([#3518](https://github.com/redis/go-redis/pull/3518)) by [@cyningsun](https://github.com/cyningsun)
+- Canceled metrics attribute for context errors ([#3566](https://github.com/redis/go-redis/pull/3566)) by [@pvragov](https://github.com/pvragov)
+
+## 🐛 Bug Fixes
+
+- Fixed Failover Client MaintNotificationsConfig ([#3600](https://github.com/redis/go-redis/pull/3600)) by [@ajax16384](https://github.com/ajax16384)
+- Fixed ACLGenPass function to use the bit parameter ([#3597](https://github.com/redis/go-redis/pull/3597)) by [@destinyoooo](https://github.com/destinyoooo)
+- Return error instead of panic from commands ([#3568](https://github.com/redis/go-redis/pull/3568)) by [@dragneelfps](https://github.com/dragneelfps)
+- Safety harness in `joinErrors` to prevent panic ([#3577](https://github.com/redis/go-redis/pull/3577)) by [@manisharma](https://github.com/manisharma)
+
+## ⚡ Performance
+
+- Connection state machine with race condition fixes ([#3559](https://github.com/redis/go-redis/pull/3559)) by [@ndyakov](https://github.com/ndyakov)
+- Pool performance improvements: 47-67% faster Get/Put, 33% less memory, 50% fewer allocations ([#3565](https://github.com/redis/go-redis/pull/3565)) by [@ndyakov](https://github.com/ndyakov)
+
+## 🧪 Testing & Infrastructure
+
+- Updated to Redis 8.4.0 image ([#3603](https://github.com/redis/go-redis/pull/3603)) by [@ndyakov](https://github.com/ndyakov)
+- Added Redis 8.4-RC1-pre to CI ([#3572](https://github.com/redis/go-redis/pull/3572)) by [@ndyakov](https://github.com/ndyakov)
+- Refactored tests for idiomatic Go ([#3561](https://github.com/redis/go-redis/pull/3561), [#3562](https://github.com/redis/go-redis/pull/3562), [#3563](https://github.com/redis/go-redis/pull/3563)) by [@12ya](https://github.com/12ya)
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@12ya](https://github.com/12ya), [@ajax16384](https://github.com/ajax16384), [@cxljs](https://github.com/cxljs), [@cyningsun](https://github.com/cyningsun), [@destinyoooo](https://github.com/destinyoooo), [@dragneelfps](https://github.com/dragneelfps), [@htemelski-redis](https://github.com/htemelski-redis), [@manisharma](https://github.com/manisharma), [@ndyakov](https://github.com/ndyakov), [@ofekshenawa](https://github.com/ofekshenawa), [@pvragov](https://github.com/pvragov)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.16.0...v9.17.0
+
+# 9.16.0 (2025-10-23)
+
+## 🚀 Highlights
+
+### Maintenance Notifications Support
+
+This release introduces comprehensive support for Redis maintenance notifications, enabling applications to handle server maintenance events gracefully. The new `maintnotifications` package provides:
+
+- **RESP3 Push Notifications**: Full support for Redis RESP3 protocol push notifications
+- **Connection Handoff**: Automatic connection migration during server maintenance with configurable retry policies and circuit breakers
+- **Graceful Degradation**: Configurable timeout relaxation during maintenance windows to prevent false failures
+- **Event-Driven Architecture**: Background workers with on-demand scaling for efficient handoff processing
+- **Production-Ready**: Comprehensive E2E testing framework and monitoring capabilities
+
+For detailed usage examples and configuration options, see the [maintenance notifications documentation](maintnotifications/README.md).
+
+## ✨ New Features
+
+- **Trace Filtering**: Add support for filtering traces for specific commands, including pipeline operations and dial operations ([#3519](https://github.com/redis/go-redis/pull/3519), [#3550](https://github.com/redis/go-redis/pull/3550))
+  - New `TraceCmdFilter` option to selectively trace commands
+  - Reduces overhead by excluding high-frequency or low-value commands from traces
+
+## 🐛 Bug Fixes
+
+- **Pipeline Error Handling**: Fix issue where pipeline repeatedly sets the same error ([#3525](https://github.com/redis/go-redis/pull/3525))
+- **Connection Pool**: Ensure re-authentication does not interfere with connection handoff operations ([#3547](https://github.com/redis/go-redis/pull/3547))
+
+## 🔧 Improvements
+
+- **Hash Commands**: Update hash command implementations ([#3523](https://github.com/redis/go-redis/pull/3523))
+- **OpenTelemetry**: Use `metric.WithAttributeSet` to avoid unnecessary attribute copying in redisotel ([#3552](https://github.com/redis/go-redis/pull/3552))
+
+## 📚 Documentation
+
+- **Cluster Client**: Add explanation for why `MaxRetries` is disabled for `ClusterClient` ([#3551](https://github.com/redis/go-redis/pull/3551))
+
+## 🧪 Testing & Infrastructure
+
+- **E2E Testing**: Upgrade E2E testing framework with improved reliability and coverage ([#3541](https://github.com/redis/go-redis/pull/3541))
+- **Release Process**: Improved resiliency of the release process ([#3530](https://github.com/redis/go-redis/pull/3530))
+
+## 📦 Dependencies
+
+- Bump `rojopolis/spellcheck-github-actions` from 0.51.0 to 0.52.0 ([#3520](https://github.com/redis/go-redis/pull/3520))
+- Bump `github/codeql-action` from 3 to 4 ([#3544](https://github.com/redis/go-redis/pull/3544))
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), [@Sovietaced](https://github.com/Sovietaced), [@Udhayarajan](https://github.com/Udhayarajan), [@boekkooi-impossiblecloud](https://github.com/boekkooi-impossiblecloud), [@Pika-Gopher](https://github.com/Pika-Gopher), [@cxljs](https://github.com/cxljs), [@huiyifyj](https://github.com/huiyifyj), [@omid-h70](https://github.com/omid-h70)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.14.0...v9.16.0
+
+
+# 9.15.0 was accidentally released. Please use version 9.16.0 instead.
+
+# 9.15.0-beta.3 (2025-09-26)
+
+## Highlights
+This beta release includes a pre-production version of processing push notifications and hitless upgrades.
+
+# Changes
+
+- chore: Update hash_commands.go ([#3523](https://github.com/redis/go-redis/pull/3523))
+
+## 🚀 New Features
+
+- feat: RESP3 notifications support & Hitless notifications handling ([#3418](https://github.com/redis/go-redis/pull/3418))
+
+## 🐛 Bug Fixes
+
+- fix: pipeline repeatedly sets the error ([#3525](https://github.com/redis/go-redis/pull/3525))
+
+## 🧰 Maintenance
+
+- chore(deps): bump rojopolis/spellcheck-github-actions from 0.51.0 to 0.52.0 ([#3520](https://github.com/redis/go-redis/pull/3520))
+- feat(e2e-testing): maintnotifications e2e and refactor ([#3526](https://github.com/redis/go-redis/pull/3526))
+- feat(tag.sh): Improved resiliency of the release process ([#3530](https://github.com/redis/go-redis/pull/3530))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@cxljs](https://github.com/cxljs), [@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), and [@omid-h70](https://github.com/omid-h70)
+
+
+# 9.15.0-beta.1 (2025-09-10)
+
+## Highlights
+This beta release includes a pre-production version of processing push notifications and hitless upgrades.
+
+### Hitless Upgrades
+Hitless upgrades is a major new feature that allows for zero-downtime upgrades in Redis clusters.
+You can find more information in the [Hitless Upgrades documentation](https://github.com/redis/go-redis/tree/master/hitless).
+
+# Changes
+
+## 🚀 New Features
+- [CAE-1088] & [CAE-1072] feat: RESP3 notifications support & Hitless notifications handling ([#3418](https://github.com/redis/go-redis/pull/3418))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), [@ofekshenawa](https://github.com/ofekshenawa)
+
+
+# 9.14.0 (2025-09-10)
+
+## Highlights
+- Added batch process method to the pipeline ([#3510](https://github.com/redis/go-redis/pull/3510))
+
+# Changes
+
+## 🚀 New Features
+
+- Added batch process method to the pipeline ([#3510](https://github.com/redis/go-redis/pull/3510))
+
+## 🐛 Bug Fixes
+
+- fix: SetErr on Cmd if the command cannot be queued correctly in multi/exec ([#3509](https://github.com/redis/go-redis/pull/3509))
+
+## 🧰 Maintenance
+
+- Updates release drafter config to exclude dependabot ([#3511](https://github.com/redis/go-redis/pull/3511))
+- chore(deps): bump actions/setup-go from 5 to 6 ([#3504](https://github.com/redis/go-redis/pull/3504))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@elena-kolevska](https://github.com/elena-kolevksa), [@htemelski-redis](https://github.com/htemelski-redis) and [@ndyakov](https://github.com/ndyakov)
+
+
+# 9.13.0 (2025-09-03)
+
+## Highlights
+- Pipeliner expose queued commands ([#3496](https://github.com/redis/go-redis/pull/3496))
+- Ensure that JSON.GET returns Nil response ([#3470](https://github.com/redis/go-redis/pull/3470))
+- Fixes on Read and Write buffer sizes and UniversalOptions
+
+## Changes
+- Pipeliner expose queued commands ([#3496](https://github.com/redis/go-redis/pull/3496))
+- fix(test): fix a timing issue in pubsub test ([#3498](https://github.com/redis/go-redis/pull/3498))
+- Allow users to enable read-write splitting in failover mode. ([#3482](https://github.com/redis/go-redis/pull/3482))
+- Set the read/write buffer size of the sentinel client to 4KiB ([#3476](https://github.com/redis/go-redis/pull/3476))
+
+## 🚀 New Features
+
+- fix(otel): register wait metrics ([#3499](https://github.com/redis/go-redis/pull/3499))
+- Support subscriptions against cluster slave nodes ([#3480](https://github.com/redis/go-redis/pull/3480))
+- Add wait metrics to otel ([#3493](https://github.com/redis/go-redis/pull/3493))
+- Clean failing timeout implementation ([#3472](https://github.com/redis/go-redis/pull/3472))
+
+## 🐛 Bug Fixes
+
+- Do not assume that all non-IP hosts are loopbacks ([#3085](https://github.com/redis/go-redis/pull/3085))
+- Ensure that JSON.GET returns Nil response ([#3470](https://github.com/redis/go-redis/pull/3470))
+
+## 🧰 Maintenance
+
+- fix(otel): register wait metrics ([#3499](https://github.com/redis/go-redis/pull/3499))
+- fix(make test): Add default env in makefile ([#3491](https://github.com/redis/go-redis/pull/3491))
+- Update the introduction to running tests in README.md ([#3495](https://github.com/redis/go-redis/pull/3495))
+- test: Add comprehensive edge case tests for IncrByFloat command ([#3477](https://github.com/redis/go-redis/pull/3477))
+- Set the default read/write buffer size of Redis connection to 32KiB ([#3483](https://github.com/redis/go-redis/pull/3483))
+- Bumps test image to 8.2.1-pre ([#3478](https://github.com/redis/go-redis/pull/3478))
+- fix UniversalOptions miss ReadBufferSize and WriteBufferSize options ([#3485](https://github.com/redis/go-redis/pull/3485))
+- chore(deps): bump actions/checkout from 4 to 5 ([#3484](https://github.com/redis/go-redis/pull/3484))
+- Removes dry run for stale issues policy ([#3471](https://github.com/redis/go-redis/pull/3471))
+- Update otel metrics URL ([#3474](https://github.com/redis/go-redis/pull/3474))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@LINKIWI](https://github.com/LINKIWI), [@cxljs](https://github.com/cxljs), [@cybersmeashish](https://github.com/cybersmeashish), [@elena-kolevska](https://github.com/elena-kolevska), [@htemelski-redis](https://github.com/htemelski-redis), [@mwhooker](https://github.com/mwhooker), [@ndyakov](https://github.com/ndyakov), [@ofekshenawa](https://github.com/ofekshenawa), [@suever](https://github.com/suever)
+
+
 # 9.12.1 (2025-08-11)
 ## 🚀 Highlights
 In the last version (9.12.0) the client introduced bigger write and read buffer sized. The default value we set was 512KiB.

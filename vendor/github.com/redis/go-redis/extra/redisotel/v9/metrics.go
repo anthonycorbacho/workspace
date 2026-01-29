@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -22,7 +23,7 @@ type metricsState struct {
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
 //
-// Based on https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/semantic_conventions/database-metrics.md
+// Based on https://github.com/open-telemetry/semantic-conventions/blob/main/docs/database/database-metrics.md
 func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 	baseOpts := make([]baseOption, len(opts))
 	for i, opt := range opts {
@@ -155,6 +156,23 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
+	waits, err := conf.meter.Int64ObservableUpDownCounter(
+		"db.client.connections.waits",
+		metric.WithDescription("The number of times a connection was waited for"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	waitsDuration, err := conf.meter.Int64ObservableUpDownCounter(
+		"db.client.connections.waits_duration",
+		metric.WithDescription("The total time spent for waiting a connection in nanoseconds"),
+		metric.WithUnit("ns"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	timeouts, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.timeouts",
 		metric.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
@@ -191,6 +209,9 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributeSet(idleAttrs))
 			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributeSet(usedAttrs))
 
+			o.ObserveInt64(waits, int64(stats.WaitCount), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(waitsDuration, stats.WaitDurationNs, metric.WithAttributeSet(poolAttrs))
+
 			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributeSet(poolAttrs))
 			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributeSet(poolAttrs))
 			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributeSet(poolAttrs))
@@ -200,6 +221,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		idleMin,
 		connsMax,
 		usage,
+		waits,
+		waitsDuration,
 		timeouts,
 		hits,
 		misses,
@@ -249,11 +272,12 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+1)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, errorTypeAttribute(err))
 
-		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 		return conn, err
 	}
 }
@@ -266,12 +290,13 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+3)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, errorTypeAttribute(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 
 		return err
 	}
@@ -287,12 +312,13 @@ func (mh *metricsHook) ProcessPipelineHook(
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+3)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, errorTypeAttribute(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 
 		return err
 	}
@@ -307,4 +333,17 @@ func statusAttr(err error) attribute.KeyValue {
 		return attribute.String("status", "error")
 	}
 	return attribute.String("status", "ok")
+}
+
+func errorTypeAttribute(err error) attribute.KeyValue {
+	switch {
+	case err == nil:
+		return attribute.String("error_type", "none")
+	case errors.Is(err, context.Canceled):
+		return attribute.String("error_type", "context_canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return attribute.String("error_type", "context_timeout")
+	default:
+		return attribute.String("error_type", "other")
+	}
 }
