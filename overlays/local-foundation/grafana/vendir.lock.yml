@@ -2,8 +2,8 @@ apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
   - helmChart:
-      appVersion: 9.5.5
-      version: 6.57.4
+      appVersion: 12.3.1
+      version: 10.5.13
     path: grafana
-  path: ./charts
+  path: charts
 kind: LockConfig

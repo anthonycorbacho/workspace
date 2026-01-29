@@ -9,7 +9,6 @@ import (
 	grpcretry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 	grpcvalidator "github.com/grpc-ecosystem/go-grpc-middleware/validator"
 	grpcprometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,13 +23,11 @@ func NewServer(opts ...grpc.ServerOption) *grpc.Server {
 	// interpreter call chain is from left to right.
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainStreamInterceptor(
-			otelgrpc.StreamServerInterceptor(),
 			grpcrecovery.StreamServerInterceptor(grpcrecovery.WithRecoveryHandlerContext(recoverFrom(log.L()))),
 			grpcprometheus.StreamServerInterceptor,
 			grpcvalidator.StreamServerInterceptor(),
 		),
 		grpc.ChainUnaryInterceptor(
-			otelgrpc.UnaryServerInterceptor(),
 			grpcrecovery.UnaryServerInterceptor(grpcrecovery.WithRecoveryHandlerContext(recoverFrom(log.L()))),
 			grpcprometheus.UnaryServerInterceptor,
 			grpcvalidator.UnaryServerInterceptor(),
@@ -60,19 +57,17 @@ func NewClient(addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	// interpreter call chain is from left to right.
 	dialOps := []grpc.DialOption{
 		grpc.WithChainUnaryInterceptor(
-			otelgrpc.UnaryClientInterceptor(),
 			grpcretry.UnaryClientInterceptor(),
 			grpcprometheus.UnaryClientInterceptor,
 			grpcvalidator.UnaryClientInterceptor(),
 		),
 		grpc.WithChainStreamInterceptor(
-			otelgrpc.StreamClientInterceptor(),
 			grpcretry.StreamClientInterceptor(),
 			grpcprometheus.StreamClientInterceptor,
 		),
 	}
 	dialOps = append(dialOps, opts...)
-	return grpc.Dial(addr, dialOps...)
+	return grpc.NewClient(addr, dialOps...)
 }
 
 // WithMaxRetries sets the maximum number of retries on this call, or this interceptor.
