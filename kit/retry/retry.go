@@ -2,6 +2,7 @@ package retry
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
@@ -14,8 +15,9 @@ type Operation func() error
 // Retry the operation o until it does not return error or BackOff stops.
 // o is guaranteed to be run at least once.
 //
-// If o returns a PermanentError, the operation is not retried, and the
-// wrapped error is returned.
+// If o returns an error wrapping ErrPermanent, the operation is not retried and the error is returned.
+// When retries stop (backoff Stop or context done), the last operation error is returned
+// wrapped with ErrPermanent or the context error.
 //
 // Retry sleeps the goroutine for the duration returned by BackOff after a
 // failed operation returns.
@@ -48,17 +50,23 @@ func doRetry(ctx context.Context, operation Operation, b BackOff, t Timer) error
 		if next = b.NextBackOff(); next == Stop {
 			// case of cancel error.
 			if cerr := ctx.Err(); cerr != nil {
-				return errors.Wrap(cerr, err.Error())
+				return giveUp(err, cerr)
 			}
-			return errors.Wrap(ErrPermanent, err.Error())
+			return giveUp(err, ErrPermanent)
 		}
 
 		t.Start(next)
 
 		select {
 		case <-ctx.Done():
-			return errors.Wrap(ctx.Err(), err.Error())
+			return giveUp(err, ctx.Err())
 		case <-t.C():
 		}
 	}
+}
+
+// giveUp returns the operation error annotated with the reason to stop retrying,
+// both errors are kept in the chain (errors.Is matches the operation error and the reason).
+func giveUp(err error, reason error) error {
+	return fmt.Errorf("%w: %w", err, reason)
 }

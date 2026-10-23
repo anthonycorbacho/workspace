@@ -8,11 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const test = "test"
@@ -227,4 +230,274 @@ func (n *natsTestSuite) TestClosedStates() {
 	p.Close()
 	err = p.Publish(ctx, testClosingSubject, []byte("test closed publisher"))
 	assert.Error(n.T(), pubsub.ErrPublisherClosed, err)
+}
+
+func (n *natsTestSuite) TestConcurrentClose() {
+	addr, _ := os.LookupEnv("TESTINGNATS_URL")
+	js, nc, err := New(addr)
+	n.Require().NoError(err)
+	consumer, err := n.js.AddConsumer(test, &nats.ConsumerConfig{
+		Durable:        test + "concurrentclose",
+		AckPolicy:      nats.AckExplicitPolicy,
+		DeliverSubject: testDeliverySubject + "concurrentclose",
+		DeliverGroup:   testGroup + "concurrentclose",
+	})
+	n.Require().NoError(err)
+	s, err := NewSubscriber(testGroup+"concurrentclose", nc, js, consumer)
+	n.Require().NoError(err)
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() { _ = s.Close() })
+	}
+	wg.Wait()
+	n.ErrorIs(s.Subscribe(context.Background(), testDefaultSubject, func(context.Context, pubsub.Message, map[string]string) error {
+		return nil
+	}), pubsub.ErrSubscriberClosed)
+}
+
+// natsFixture is an isolated connection, stream and consumer so tests don't share state on the broker.
+type natsFixture struct {
+	nc       *nats.Conn
+	js       nats.JetStreamContext
+	subject  string
+	consumer *nats.ConsumerInfo
+}
+
+// newFixture creates a uniquely named stream with a push consumer bound to a queue group.
+func (n *natsTestSuite) newFixture() *natsFixture {
+	addr, _ := os.LookupEnv("TESTINGNATS_URL")
+	js, nc, err := New(addr)
+	n.Require().NoError(err)
+
+	uid := id.New()
+	name := "kit-" + uid
+	subject := "kit." + uid
+	_, err = js.AddStream(&nats.StreamConfig{Name: name, Subjects: []string{subject + ".>"}})
+	n.Require().NoError(err)
+	consumer, err := js.AddConsumer(name, &nats.ConsumerConfig{
+		Durable:        name,
+		AckPolicy:      nats.AckExplicitPolicy,
+		AckWait:        30 * time.Second,
+		DeliverSubject: "deliver." + uid,
+		DeliverGroup:   name,
+	})
+	n.Require().NoError(err)
+
+	n.T().Cleanup(func() {
+		// the subscriber may have drained the connection already.
+		_, cleanNC, err := New(addr)
+		if err != nil {
+			return
+		}
+		defer cleanNC.Close()
+		cleanJS, err := cleanNC.JetStream()
+		if err == nil {
+			_ = cleanJS.DeleteStream(name)
+		}
+		nc.Close()
+	})
+	return &natsFixture{nc: nc, js: js, subject: subject + ".events", consumer: consumer}
+}
+
+func (n *natsTestSuite) TestPublishAndSubscribeMetadata() {
+	f := n.newFixture()
+	p, err := NewPublisher(f.nc, f.js)
+	n.Require().NoError(err)
+	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
+	n.Require().NoError(err)
+
+	type received struct {
+		msg      string
+		metadata map[string]string
+		topic    string
+		traceID  trace.TraceID
+	}
+	ch := make(chan received, 1)
+	err = s.Subscribe(context.Background(), f.subject, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
+		ch <- received{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx), traceID: trace.SpanContextFromContext(ctx).TraceID()}
+		return nil
+	})
+	n.Require().NoError(err)
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	err = p.Publish(ctx, f.subject, []byte("hello"), pubsub.WithAttributes(map[string]string{"attb1": "value"}))
+	n.Require().NoError(err)
+
+	select {
+	case r := <-ch:
+		n.Equal("hello", r.msg)
+		n.Equal(f.subject, r.topic)
+		n.Equal("value", r.metadata["attb1"])
+		n.Equal(f.subject, r.metadata["subject"])
+		n.Equal(sc.TraceID(), r.traceID)
+	case <-time.After(10 * time.Second):
+		n.FailNow("timeout waiting for message")
+	}
+}
+
+func (n *natsTestSuite) TestSubscribeWithAckNackRedelivery() {
+	f := n.newFixture()
+	p, err := NewPublisher(f.nc, f.js)
+	n.Require().NoError(err)
+	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
+	n.Require().NoError(err)
+
+	var mu sync.Mutex
+	deliveries := 0
+	ch := make(chan string, 2)
+	err = s.SubscribeWithAck(context.Background(), f.subject, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
+		mu.Lock()
+		deliveries++
+		first := deliveries == 1
+		mu.Unlock()
+		if first {
+			nack()
+		} else {
+			ack()
+		}
+		ch <- msg.String()
+		return nil
+	})
+	n.Require().NoError(err)
+	n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("redeliver me")))
+
+	for i := range 2 {
+		select {
+		case msg := <-ch:
+			n.Equal("redeliver me", msg, "delivery %d", i)
+		case <-time.After(10 * time.Second):
+			n.FailNow("timeout waiting for redelivery")
+		}
+	}
+}
+
+func (n *natsTestSuite) TestHandlerErrorKeepsSubscription() {
+	f := n.newFixture()
+	p, err := NewPublisher(f.nc, f.js)
+	n.Require().NoError(err)
+	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
+	n.Require().NoError(err)
+
+	ch := make(chan string, 2)
+	err = s.Subscribe(context.Background(), f.subject, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+		ch <- msg.String()
+		return fmt.Errorf("handler failed for %s", msg)
+	})
+	n.Require().NoError(err)
+
+	n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("first")))
+	n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("second")))
+
+	got := []string{}
+	for range 2 {
+		select {
+		case msg := <-ch:
+			got = append(got, msg)
+		case <-time.After(10 * time.Second):
+			n.FailNow("timeout waiting for messages")
+		}
+	}
+	n.ElementsMatch([]string{"first", "second"}, got)
+}
+
+func (n *natsTestSuite) TestPublishSubscribeErrors() {
+	f := n.newFixture()
+	p, err := NewPublisher(f.nc, f.js)
+	n.Require().NoError(err)
+	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
+	n.Require().NoError(err)
+	noop := func(context.Context, pubsub.Message, map[string]string) error { return nil }
+
+	n.ErrorIs(p.Publish(context.Background(), "", []byte("x")), pubsub.ErrNilTopic)
+	n.Error(s.Subscribe(context.Background(), "", noop))
+	// subject not covered by any stream.
+	n.Error(p.Publish(context.Background(), "kit.nostream."+id.New(), []byte("x")))
+}
+
+func (n *natsTestSuite) TestPublishAfterClose() {
+	f := n.newFixture()
+	p, err := NewPublisher(f.nc, f.js)
+	n.Require().NoError(err)
+
+	n.Require().NoError(p.Close())
+	n.ErrorIs(p.Publish(context.Background(), f.subject, []byte("x")), pubsub.ErrPublisherClosed)
+}
+
+func (n *natsTestSuite) TestPublishAfterConnectionClosed() {
+	f := n.newFixture()
+	p, err := NewPublisher(f.nc, f.js)
+	n.Require().NoError(err)
+
+	f.nc.Close()
+	n.ErrorIs(p.Publish(context.Background(), f.subject, []byte("x")), pubsub.ErrPublisherClosed)
+	n.ErrorIs(p.Close(), pubsub.ErrPublisherClosed)
+}
+
+func (n *natsTestSuite) TestSubscriberCloseWithClosedConnection() {
+	f := n.newFixture()
+	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
+	n.Require().NoError(err)
+
+	f.nc.Close()
+	n.ErrorIs(s.Subscribe(context.Background(), f.subject, func(context.Context, pubsub.Message, map[string]string) error {
+		return nil
+	}), pubsub.ErrSubscriberClosed)
+	n.ErrorIs(s.Close(), pubsub.ErrSubscriberClosed)
+	n.NoError(s.Close(), "closing twice is a no-op")
+}
+
+func TestNewPublisherSubscriberValidation(t *testing.T) {
+	nc := &nats.Conn{}
+	js, err := nc.JetStream()
+	require.NoError(t, err)
+	consumer := &nats.ConsumerInfo{}
+
+	pubTests := []struct {
+		name string
+		nc   *nats.Conn
+		js   nats.JetStreamContext
+	}{
+		{name: "nil connection", nc: nil, js: js},
+		{name: "nil jetstream", nc: nc, js: nil},
+	}
+	for _, tt := range pubTests {
+		t.Run("publisher "+tt.name, func(t *testing.T) {
+			p, err := NewPublisher(tt.nc, tt.js)
+			assert.Error(t, err)
+			assert.Nil(t, p)
+		})
+	}
+
+	subTests := []struct {
+		name     string
+		group    string
+		nc       *nats.Conn
+		js       nats.JetStreamContext
+		consumer *nats.ConsumerInfo
+		wantErr  bool
+	}{
+		{name: "empty queue group", group: "", nc: nc, js: js, consumer: consumer, wantErr: true},
+		{name: "nil connection", group: "g", nc: nil, js: js, consumer: consumer, wantErr: true},
+		{name: "nil jetstream", group: "g", nc: nc, js: nil, consumer: consumer, wantErr: true},
+		{name: "nil consumer", group: "g", nc: nc, js: js, consumer: nil, wantErr: true},
+		{name: "valid", group: "g", nc: nc, js: js, consumer: consumer, wantErr: false},
+	}
+	for _, tt := range subTests {
+		t.Run("subscriber "+tt.name, func(t *testing.T) {
+			s, err := NewSubscriber(tt.group, tt.nc, tt.js, tt.consumer)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Nil(t, s)
+				return
+			}
+			assert.NoError(t, err)
+			assert.NotNil(t, s)
+		})
+	}
 }

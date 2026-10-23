@@ -12,6 +12,8 @@ import (
 type FoundationOptions struct {
 	grpcAddr         string
 	httpAddr         string
+	metricsAddr      string
+	probesAddr       string
 	grpcServerOpts   []grpc.ServerOption
 	corsOpts         cors.Options
 	enableCors       bool
@@ -75,5 +77,19 @@ func WithHTTPReadTimeout(timeout time.Duration) Option {
 func WithLogger(logger *log.Logger) Option {
 	return func(fo *FoundationOptions) {
 		fo.logger = logger
+	}
+}
+
+// WithMetricsAddr defines the address of the HTTP server exposing the prometheus /metrics endpoint.
+func WithMetricsAddr(addr string) Option {
+	return func(fo *FoundationOptions) {
+		fo.metricsAddr = addr
+	}
+}
+
+// WithProbesAddr defines the address of the HTTP server exposing the health probes and profiling endpoints.
+func WithProbesAddr(addr string) Option {
+	return func(fo *FoundationOptions) {
+		fo.probesAddr = addr
 	}
 }

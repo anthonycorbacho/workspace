@@ -101,8 +101,10 @@ func NewClient(addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 }
 
 // WithMaxRetries sets the maximum number of retries on this call, or this interceptor.
+// The call is attempted at most maxRetries+1 times (the initial call and its retries).
 func WithMaxRetries(maxRetries uint) grpcretry.CallOption {
-	return grpcretry.WithMax(maxRetries)
+	// grpcretry.WithMax is the maximum number of attempts, the initial call included.
+	return grpcretry.WithMax(maxRetries + 1)
 }
 
 // WithPerRetryTimeout sets the RPC timeout per call (including initial call) on this call, or this interceptor.

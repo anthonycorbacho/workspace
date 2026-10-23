@@ -19,6 +19,7 @@ func tracingAttributes(span trace.Span, m map[string]string) {
 	m["span"] = span.SpanContext().SpanID().String()
 	m["trace-state"] = span.SpanContext().TraceState().String()
 	m["trace-remote"] = strconv.FormatBool(span.SpanContext().IsRemote())
+	m["trace-sampled"] = strconv.FormatBool(span.SpanContext().IsSampled())
 }
 
 func contextFromTracingAttributes(ctx context.Context, m map[string]string) context.Context {
@@ -41,10 +42,15 @@ func contextFromTracingAttributes(ctx context.Context, m map[string]string) cont
 		return ctx
 	}
 
+	// the flag is written with strconv.FormatBool, a missing flag (eg: message published
+	// by an older version) is considered not sampled.
+	sampled := m["trace-sampled"] == "true"
+
 	scc := trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     spanID,
 		TraceState: stats,
+		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
 		Remote:     remote,
 	}
 

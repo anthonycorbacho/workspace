@@ -22,7 +22,11 @@ type Logger struct {
 // It uses a JSON encoder, writes to standard error, and enables sampling.
 // Stacktraces are automatically included on logs of ErrorLevel and above.
 func New(opts ...func(*Option)) (*Logger, error) {
-	level, err := parse(config.LookupEnv("FOUNDATION_LOG_LEVEL", "INFO"))
+	envLevel := config.LookupEnv("FOUNDATION_LOG_LEVEL", "")
+	if len(envLevel) == 0 {
+		envLevel = "INFO"
+	}
+	level, err := parse(envLevel)
 	if err != nil {
 		return nil, err
 	}

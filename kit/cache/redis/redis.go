@@ -48,11 +48,7 @@ func (c *Cache) Close() error {
 	if c.client == nil {
 		return errors.New("no redis client")
 	}
-
-	defer func() {
-		c.client = nil
-	}()
-
+	// the client is kept, using a closed client returns redis.ErrClosed instead of panicking.
 	return c.client.Close()
 }
 

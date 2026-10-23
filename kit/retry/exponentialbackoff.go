@@ -71,8 +71,10 @@ type ExponentialBackOff struct {
 	// After MaxElapsedTime the ExponentialBackOff returns Stop.
 	// It never stops if MaxElapsedTime == 0.
 	MaxElapsedTime time.Duration
-	Stop           time.Duration
-	Clock          Clock
+	// Stop is the backoff returned once MaxElapsedTime is exceeded.
+	// The default (retry.Stop) stops retrying, any other value keeps retrying with that delay.
+	Stop  time.Duration
+	Clock Clock
 
 	currentInterval time.Duration
 	startTime       time.Time
@@ -134,7 +136,10 @@ func WithMaxElapsedTime(duration time.Duration) ExponentialBackOffOpts {
 	}
 }
 
-// WithRetryStopDuration sets the duration after which retries should stop.
+// WithRetryStopDuration sets the backoff returned once MaxElapsedTime is exceeded.
+//
+// By default it is retry.Stop and retries stop after MaxElapsedTime, any other value
+// keeps retrying forever with that delay between attempts (eg: 0 retries without delay).
 func WithRetryStopDuration(duration time.Duration) ExponentialBackOffOpts {
 	return func(ebo *ExponentialBackOff) {
 		ebo.Stop = duration

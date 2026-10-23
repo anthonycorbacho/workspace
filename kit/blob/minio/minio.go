@@ -87,7 +87,8 @@ func (c *Client) writer(
 	w := newPipe()
 	go func() {
 		_, err := c.m.PutObject(ctx, bucket, filename, w.pr, fileSize, *putOpts)
-		w.pr.CloseWithError(err)
+		// finish before notifying done, callers wait on done only after Close returned.
+		w.finish(err)
 		if done != nil {
 			done <- err
 			close(done)

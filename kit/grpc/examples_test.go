@@ -90,7 +90,7 @@ func ExampleNewClient_withRetryAndCodes() {
 		context.Background(),
 		&pb.FetchRequest{Id: "43"},
 		grpckit.WithMaxRetries(5),        // retry 5 times
-		grpckit.WithCodes(codes.Aborted), // add a new code to the list of retry
+		grpckit.WithCodes(codes.Aborted), // retry only on Aborted (replaces the default codes)
 	)
 	if err != nil {
 		// handle client call error from the grpc server

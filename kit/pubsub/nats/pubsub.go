@@ -18,6 +18,7 @@ func tracingAttributes(span trace.Span, m map[string][]string) {
 	m["span"] = []string{span.SpanContext().SpanID().String()}
 	m["trace-state"] = []string{span.SpanContext().TraceState().String()}
 	m["trace-remote"] = []string{strconv.FormatBool(span.SpanContext().IsRemote())}
+	m["trace-sampled"] = []string{strconv.FormatBool(span.SpanContext().IsSampled())}
 }
 
 func contextFromTracingAttributes(ctx context.Context, m map[string]string) context.Context {
@@ -40,10 +41,15 @@ func contextFromTracingAttributes(ctx context.Context, m map[string]string) cont
 		return ctx
 	}
 
+	// the flag is written with strconv.FormatBool, a missing flag (eg: message published
+	// by an older version) is considered not sampled.
+	sampled := m["trace-sampled"] == "true"
+
 	scc := trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     spanID,
 		TraceState: stats,
+		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
 		Remote:     remote,
 	}
 
@@ -68,6 +74,7 @@ func New(url string, options ...func(*nats.Conn)) (nats.JetStreamContext, *nats.
 	// Create JetStream Context
 	js, err := nc.JetStream(nats.PublishAsyncMaxPending(256))
 	if err != nil {
+		nc.Close()
 		return nil, nil, err
 	}
 	return js, nc, nil

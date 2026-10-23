@@ -19,7 +19,7 @@ type Blob interface {
 	// Should be used only if everything can fit in memory
 	Read(ctx context.Context, bucket string, filename string) ([]byte, error)
 
-	// Write (or overwrite) some data.
+	// Write (or overwrite) some data, it returns once the upload completed.
 	Write(ctx context.Context, bucket string, filename string, data []byte, writeOpts ...WriteOption) error
 
 	// Write (or overwrite) some data.
@@ -31,6 +31,7 @@ type Blob interface {
 
 	// Writer returns an io.WriteCloser that can be used to write (or overwrite) chunks of data
 	// Should be used when we want to stream bytes or when file is too big to fit in memory
+	// Close waits for the upload to complete and returns its error.
 	Writer(ctx context.Context, bucket string, filename string, writeOpts ...WriteOption) (io.WriteCloser, error)
 
 	// SyncWriter returns an io.WriteCloser that can be used to write (or overwrite) chunks of data

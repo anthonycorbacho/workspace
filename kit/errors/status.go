@@ -1,8 +1,6 @@
 package errors
 
 import (
-	"fmt"
-
 	errdetails "github.com/anthonycorbacho/workspace/api/errdetails/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -39,15 +37,18 @@ func Status(code codes.Code, message string, details ...*errdetails.ErrorInfo) e
 
 	dd := make([]protoadapt.MessageV1, 0, len(details))
 	for _, d := range details {
-		dd = append(dd, protoadapt.MessageV1Of(d))
+		if d != nil {
+			dd = append(dd, protoadapt.MessageV1Of(d))
+		}
+	}
+	if len(dd) == 0 {
+		return st.Err()
 	}
 
-	st, err := st.WithDetails(dd...)
+	withDetails, err := st.WithDetails(dd...)
 	if err != nil {
-		// If this errored, it will always error here, better panic,
-		// so we can figure out why than have this silently passing.
-		panic(fmt.Sprintf("unexpected error attaching metadata: %v", err))
+		// details can't be attached to an OK status, which is not an error (st.Err() returns nil).
+		return st.Err()
 	}
-
-	return st.Err()
+	return withDetails.Err()
 }

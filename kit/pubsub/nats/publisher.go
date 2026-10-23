@@ -45,10 +45,16 @@ func NewPublisher(nc *nats.Conn, js nats.JetStreamContext) (*Publisher, error) {
 
 // Close notifies the Publisher to stop processing messages, send all the remaining messages and close the connection.
 func (p *Publisher) Close() error {
-	if p.nc.IsClosed() {
+	if p.isClosed() {
 		return pubsub.ErrPublisherClosed
 	}
 	return p.nc.Drain()
+}
+
+// isClosed reports if the connection is closed or being closed,
+// Close drains the connection asynchronously.
+func (p *Publisher) isClosed() bool {
+	return p.nc.IsClosed() || p.nc.IsDraining()
 }
 
 // Publish publishes a message on a NATS Pub/Sub subject (topic).
@@ -76,7 +82,7 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 
 	// if the publisher is in closing state or has been closed
 	// we return an error and annotate the trace with the error.
-	if p.nc.IsClosed() {
+	if p.isClosed() {
 		err := pubsub.ErrPublisherClosed
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

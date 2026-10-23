@@ -146,11 +146,17 @@ func NewClient(address string, clientID string, options ...Option) (*Client, err
 		return nil, err
 	}
 
-	// force a connection to mqtt
-	ctx, fn := context.WithTimeout(ctx, 5*time.Second)
-	defer fn()
-	err = c.AwaitConnection(ctx)
+	// force a connection to mqtt, ctx is not reused as it is read by the connection callbacks.
+	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	err = c.AwaitConnection(connectCtx)
 	if err != nil {
+		// stop the connection manager, it would otherwise keep reconnecting in the background.
+		disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if dErr := c.Disconnect(disconnectCtx); dErr != nil {
+			l.Warn(disconnectCtx, "disconnecting MQTT client", log.Error(dErr))
+		}
 		return nil, err
 	}
 

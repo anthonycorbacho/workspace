@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/stretchr/testify/suite"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const testProject = "fake"
@@ -138,4 +140,198 @@ func (g *gcpTestSuite) TestClosedStates() {
 	g.ErrorIs(s.Subscribe(ctx, sub, func(context.Context, pubsub.Message, map[string]string) error {
 		return nil
 	}), pubsub.ErrSubscriberClosed)
+}
+
+func (g *gcpTestSuite) TestConcurrentClose() {
+	ctx := context.Background()
+	_, sub := g.createTopic(false)
+
+	s, err := NewSubscriber(g.newClient())
+	g.Require().NoError(err)
+	g.Require().NoError(s.Subscribe(ctx, sub, func(context.Context, pubsub.Message, map[string]string) error {
+		return nil
+	}))
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() { g.NoError(s.Close()) })
+		wg.Go(func() {
+			// subscribing while closing either succeeds before the close or is rejected.
+			err := s.Subscribe(ctx, sub, func(context.Context, pubsub.Message, map[string]string) error {
+				return nil
+			})
+			if err != nil {
+				g.ErrorIs(err, pubsub.ErrSubscriberClosed)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func (g *gcpTestSuite) TestTracePropagation() {
+	ctx := context.Background()
+	topic, sub := g.createTopic(false)
+
+	p, err := NewPublisher(g.newClient())
+	g.Require().NoError(err)
+	defer p.Close()
+	s, err := NewSubscriber(g.newClient())
+	g.Require().NoError(err)
+	defer s.Close()
+
+	type received struct {
+		metadata map[string]string
+		traceID  trace.TraceID
+	}
+	ch := make(chan received, 1)
+	err = s.Subscribe(ctx, sub, func(ctx context.Context, _ pubsub.Message, metadata map[string]string) error {
+		ch <- received{metadata: metadata, traceID: trace.SpanContextFromContext(ctx).TraceID()}
+		return nil
+	})
+	g.Require().NoError(err)
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	// the topic attribute is reserved by the publisher and cannot be overridden.
+	err = p.Publish(trace.ContextWithSpanContext(ctx, sc), topic, []byte("hello"), pubsub.WithAttributes(map[string]string{"topic": "other"}))
+	g.Require().NoError(err)
+
+	select {
+	case r := <-ch:
+		g.Equal(topic, r.metadata["topic"])
+		g.Equal(sc.TraceID().String(), r.metadata["trace"])
+		g.Equal(sc.TraceID(), r.traceID)
+	case <-time.After(10 * time.Second):
+		g.FailNow("timeout waiting for message")
+	}
+}
+
+func (g *gcpTestSuite) TestSubscribeWithAckNackRedelivery() {
+	ctx := context.Background()
+	topic, sub := g.createTopic(false)
+
+	p, err := NewPublisher(g.newClient())
+	g.Require().NoError(err)
+	defer p.Close()
+	s, err := NewSubscriber(g.newClient(), WithMaxOutstandingMessages(1))
+	g.Require().NoError(err)
+	defer s.Close()
+
+	var mu sync.Mutex
+	deliveries := 0
+	ch := make(chan string, 2)
+	err = s.SubscribeWithAck(ctx, sub, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
+		mu.Lock()
+		deliveries++
+		first := deliveries == 1
+		mu.Unlock()
+		if first {
+			nack()
+		} else {
+			ack()
+		}
+		select {
+		case ch <- msg.String():
+		default:
+		}
+		return nil
+	})
+	g.Require().NoError(err)
+	g.Require().NoError(p.Publish(ctx, topic, []byte("redeliver me")))
+
+	for i := range 2 {
+		select {
+		case msg := <-ch:
+			g.Equal("redeliver me", msg, "delivery %d", i)
+		case <-time.After(10 * time.Second):
+			g.FailNow("timeout waiting for redelivery")
+		}
+	}
+}
+
+func (g *gcpTestSuite) TestHandlerErrorKeepsSubscription() {
+	ctx := context.Background()
+	topic, sub := g.createTopic(false)
+
+	p, err := NewPublisher(g.newClient())
+	g.Require().NoError(err)
+	defer p.Close()
+	s, err := NewSubscriber(g.newClient())
+	g.Require().NoError(err)
+	defer s.Close()
+
+	ch := make(chan string, 2)
+	err = s.Subscribe(ctx, sub, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+		ch <- msg.String()
+		return fmt.Errorf("handler failed for %s", msg)
+	})
+	g.Require().NoError(err)
+
+	g.Require().NoError(p.Publish(ctx, topic, []byte("first")))
+	g.Require().NoError(p.Publish(ctx, topic, []byte("second")))
+
+	got := []string{}
+	for range 2 {
+		select {
+		case msg := <-ch:
+			got = append(got, msg)
+		case <-time.After(10 * time.Second):
+			g.FailNow("timeout waiting for messages")
+		}
+	}
+	g.ElementsMatch([]string{"first", "second"}, got)
+}
+
+func (g *gcpTestSuite) TestSubscriptionContextCanceled() {
+	_, sub := g.createTopic(false)
+	s, err := NewSubscriber(g.newClient())
+	g.Require().NoError(err)
+	noop := func(context.Context, pubsub.Message, map[string]string) error { return nil }
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	g.Error(s.Subscribe(canceled, sub, noop), "subscription lookup fails with a canceled context")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	g.Require().NoError(s.Subscribe(ctx, sub, noop))
+	// canceling the context stops receiving, Close must not wait forever.
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Close() }()
+	select {
+	case err := <-done:
+		g.NoError(err)
+	case <-time.After(10 * time.Second):
+		g.FailNow("timeout waiting for Close")
+	}
+}
+
+func (g *gcpTestSuite) TestPublishFullyQualifiedTopic() {
+	ctx := context.Background()
+	topic, sub := g.createTopic(false)
+
+	p, err := NewPublisher(g.newClient())
+	g.Require().NoError(err)
+	defer p.Close()
+	s, err := NewSubscriber(g.newClient())
+	g.Require().NoError(err)
+	defer s.Close()
+
+	ch := make(chan string, 1)
+	err = s.Subscribe(ctx, resourceName(testProject, "subscriptions", sub), func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+		ch <- msg.String()
+		return nil
+	})
+	g.Require().NoError(err)
+	g.Require().NoError(p.Publish(ctx, resourceName(testProject, "topics", topic), []byte("qualified")))
+
+	select {
+	case msg := <-ch:
+		g.Equal("qualified", msg)
+	case <-time.After(10 * time.Second):
+		g.FailNow("timeout waiting for message")
+	}
 }

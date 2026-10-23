@@ -155,3 +155,120 @@ func TestNewExponentialBackOff(t *testing.T) {
 		t.Errorf("Expected Clock to be SystemClock, got %v", backOff.Clock)
 	}
 }
+
+func TestNewExponentialBackOffDefaults(t *testing.T) {
+	b := NewExponentialBackOff()
+	assert.Equal(t, DefaultInitialInterval, b.InitialInterval)
+	assert.Equal(t, DefaultRandomizationFactor, b.RandomizationFactor)
+	assert.Equal(t, DefaultMultiplier, b.Multiplier)
+	assert.Equal(t, DefaultMaxInterval, b.MaxInterval)
+	assert.Equal(t, DefaultMaxElapsedTime, b.MaxElapsedTime)
+	assert.Equal(t, Stop, b.Stop)
+	assert.Equal(t, SystemClock, b.Clock)
+}
+
+func TestExponentialBackOffSequence(t *testing.T) {
+	tests := []struct {
+		name           string
+		opts           []ExponentialBackOffOpts
+		want           []time.Duration
+		advanceElapsed bool // use a clock moving by 1s on each call.
+	}{
+		{
+			name: "no randomization",
+			opts: []ExponentialBackOffOpts{
+				WithInitialInterval(100 * time.Millisecond),
+				WithRandomizationFactor(0),
+				WithMultiplier(2),
+				WithMaxInterval(time.Second),
+			},
+			want: []time.Duration{
+				100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond,
+				800 * time.Millisecond, time.Second, time.Second,
+			},
+		},
+		{
+			name: "multiplier of one is constant",
+			opts: []ExponentialBackOffOpts{
+				WithInitialInterval(time.Second),
+				WithRandomizationFactor(0),
+				WithMultiplier(1),
+			},
+			want: []time.Duration{time.Second, time.Second, time.Second},
+		},
+		{
+			name: "zero max elapsed time never stops",
+			opts: []ExponentialBackOffOpts{
+				WithInitialInterval(time.Second),
+				WithRandomizationFactor(0),
+				WithMultiplier(1),
+				WithMaxElapsedTime(0),
+			},
+			advanceElapsed: true,
+			want:           []time.Duration{time.Second, time.Second, time.Second, time.Second},
+		},
+		{
+			name: "stop once max elapsed time is reached",
+			opts: []ExponentialBackOffOpts{
+				WithInitialInterval(time.Second),
+				WithRandomizationFactor(0),
+				WithMultiplier(1),
+				WithMaxElapsedTime(3 * time.Second),
+			},
+			advanceElapsed: true,
+			// elapsed 1s+1s, 2s+1s, 3s+1s > 3s.
+			want: []time.Duration{time.Second, time.Second, Stop, Stop},
+		},
+		{
+			name: "custom stop duration once max elapsed time is reached",
+			opts: []ExponentialBackOffOpts{
+				WithInitialInterval(time.Second),
+				WithRandomizationFactor(0),
+				WithMultiplier(1),
+				WithMaxElapsedTime(2 * time.Second),
+				WithRetryStopDuration(0),
+			},
+			advanceElapsed: true,
+			want:           []time.Duration{time.Second, 0, 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := tt.opts
+			if tt.advanceElapsed {
+				opts = append(opts, WithClockProvider(&TestClock{}))
+			}
+			b := NewExponentialBackOff(opts...)
+			for i, want := range tt.want {
+				assert.Equal(t, want, b.NextBackOff(), "call %d", i)
+			}
+		})
+	}
+}
+
+func TestExponentialBackOffReset(t *testing.T) {
+	b := NewExponentialBackOff(
+		WithInitialInterval(time.Second),
+		WithRandomizationFactor(0),
+		WithMultiplier(2),
+	)
+	assert.Equal(t, time.Second, b.NextBackOff())
+	assert.Equal(t, 2*time.Second, b.NextBackOff())
+
+	b.Reset()
+	assert.Equal(t, time.Second, b.NextBackOff())
+}
+
+func TestExponentialBackOffRandomization(t *testing.T) {
+	b := NewExponentialBackOff(
+		WithInitialInterval(time.Second),
+		WithRandomizationFactor(0.5),
+		WithMultiplier(1),
+	)
+	for range 100 {
+		next := b.NextBackOff()
+		assert.GreaterOrEqual(t, next, 500*time.Millisecond)
+		assert.LessOrEqual(t, next, 1500*time.Millisecond)
+	}
+}

@@ -9,11 +9,13 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/anthonycorbacho/workspace/kit/config"
+	kitpubsub "github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/anthonycorbacho/workspace/kit/pubsub/gcp"
 	kitkafka "github.com/anthonycorbacho/workspace/kit/pubsub/kafka"
 	kitmqtt "github.com/anthonycorbacho/workspace/kit/pubsub/mqtt"
 	kitnats "github.com/anthonycorbacho/workspace/kit/pubsub/nats"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfig(t *testing.T) {
@@ -217,4 +219,90 @@ func TestMqttConfig(t *testing.T) {
 	defer closeSub()
 	assert.NoError(t, err)
 	assert.IsType(t, &kitmqtt.Subscriber{}, s)
+}
+
+func TestGcpConfigCloseFunc(t *testing.T) {
+	if os.Getenv("PUBSUB_EMULATOR_HOST") == "" {
+		t.Skip("Skipping, no env variable PUBSUB_EMULATOR_HOST")
+	}
+	pc := Config{Kind: "gcp-publisher", GcpPublisher: &GcpPublisher{Project: "fake"}}
+	p, closePub, err := pc.Publisher(context.TODO())
+	require.NoError(t, err)
+	closePub()
+	assert.ErrorIs(t, p.Publish(context.TODO(), "topic", []byte("msg")), kitpubsub.ErrPublisherClosed)
+
+	sc := Config{Kind: "gcp-subscriber", GcpSubscriber: &GcpSubscriber{GcpPublisher: GcpPublisher{Project: "fake"}}}
+	s, closeSub, err := sc.Subscriber(context.TODO())
+	require.NoError(t, err)
+	closeSub()
+	assert.ErrorIs(t, s.Subscribe(context.TODO(), "sub", func(context.Context, kitpubsub.Message, map[string]string) error {
+		return nil
+	}), kitpubsub.ErrSubscriberClosed)
+}
+
+func TestNatsConfigCloseFunc(t *testing.T) {
+	if os.Getenv("TESTINGNATS_URL") == "" {
+		t.Skip("Skipping, no env variable TESTINGNATS_URL")
+	}
+	c := Config{
+		Kind: "nats-publisher",
+		NatsPublisher: &NatsPublisher{NatsConnection: NatsConnection{
+			URL:                    os.Getenv("TESTINGNATS_URL"),
+			PublishAsyncMaxPending: 16,
+		}},
+	}
+	p, closePub, err := c.Publisher(context.TODO())
+	require.NoError(t, err)
+	closePub()
+	assert.Error(t, p.Publish(context.TODO(), "subject", []byte("msg")))
+}
+
+func TestNatsConfigUnknownConsumer(t *testing.T) {
+	if os.Getenv("TESTINGNATS_URL") == "" {
+		t.Skip("Skipping, no env variable TESTINGNATS_URL")
+	}
+	c := Config{
+		Kind: "nats-subscriber",
+		NatsSubscriber: &NatsSubscriber{
+			NatsConnection:    NatsConnection{URL: os.Getenv("TESTINGNATS_URL")},
+			Stream:            "does-not-exist",
+			ConsumerName:      "does-not-exist",
+			ConsumerGroupName: "group",
+		},
+	}
+	_, closeSub, err := c.Subscriber(context.TODO())
+	defer closeSub()
+	assert.ErrorContains(t, err, "failed to get consumer info")
+}
+
+func TestMqttConfigUnreachableBroker(t *testing.T) {
+	c := Config{Kind: "mqtt-publisher", MqttPublisher: &MqttPublisher{MqttConnection: MqttConnection{Addr: "mqtt://127.0.0.1:1"}}}
+	_, closePub, err := c.Publisher(context.TODO())
+	defer closePub()
+	assert.Error(t, err)
+}
+
+func TestUnknownKind(t *testing.T) {
+	c := Config{Kind: "unknown"}
+	_, closePub, err := c.Publisher(context.TODO())
+	closePub()
+	assert.Error(t, err)
+	_, closeSub, err := c.Subscriber(context.TODO())
+	closeSub()
+	assert.Error(t, err)
+
+	missing := []Config{
+		{Kind: "gcp-publisher"}, {Kind: "nats-publisher"}, {Kind: "kafka-publisher"}, {Kind: "mqtt-publisher"},
+	}
+	for _, c := range missing {
+		_, _, err := c.Publisher(context.TODO())
+		assert.Error(t, err, c.Kind)
+	}
+	missingSub := []Config{
+		{Kind: "gcp-subscriber"}, {Kind: "nats-subscriber"}, {Kind: "kafka-subscriber"}, {Kind: "mqtt-subscriber"},
+	}
+	for _, c := range missingSub {
+		_, _, err := c.Subscriber(context.TODO())
+		assert.Error(t, err, c.Kind)
+	}
 }

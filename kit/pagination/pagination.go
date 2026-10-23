@@ -71,11 +71,19 @@ func NewBatcher(want, max int) *Batcher {
 // `total` is the total number of rows last fetched.
 // This calculates a new value to be used for calls to Next.
 func (b *Batcher) Update(matched, total int) {
+	if matched <= 0 || total <= 0 {
+		// there is no ratio to compute, the next batch fetches as much as allowed.
+		b.ratio = 0
+		return
+	}
 	b.ratio = float64(matched) / float64(total)
 }
 
 // Next returns the recommended next batch size to query.
 func (b *Batcher) Next() int {
+	if b.ratio <= 0 {
+		return b.max
+	}
 	n := int(math.Ceil(float64(b.want) / b.ratio))
 	if n > b.max {
 		return b.max

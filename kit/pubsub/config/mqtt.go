@@ -42,6 +42,7 @@ func (m *MqttPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, fun
 	}
 	pub, err := kitmqtt.NewPublisher(client)
 	if err != nil {
+		closeClient(ctx, func() error { return client.Disconnect(ctx) })
 		return nil, noop, err
 	}
 	closeFn := func() {
@@ -60,6 +61,7 @@ func (m *MqttSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, 
 	}
 	sub, err := kitmqtt.NewSubscriber(client)
 	if err != nil {
+		closeClient(ctx, func() error { return client.Disconnect(ctx) })
 		return nil, noop, err
 	}
 	closeFn := func() {

@@ -55,3 +55,17 @@ func TestStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusOK(t *testing.T) {
+	assert.NotPanics(t, func() {
+		assert.NoError(t, Status(codes.OK, "ok"))
+		assert.NoError(t, Status(codes.OK, "ok", &errdetails.ErrorInfo{Reason: "NONE"}))
+	})
+}
+
+func TestStatusNilDetails(t *testing.T) {
+	err := Status(codes.NotFound, "not found", nil, &errdetails.ErrorInfo{Reason: "NOT_FOUND"})
+	st := status.Convert(err)
+	assert.Equal(t, codes.NotFound, st.Code())
+	assert.Len(t, st.Details(), 1)
+}

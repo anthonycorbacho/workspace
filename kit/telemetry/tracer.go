@@ -41,6 +41,12 @@ func NewTracer(serviceName string, opts ...func(*TracerOption)) (*sdktrace.Trace
 		o(option)
 	}
 
+	// the resource is created first so a failure doesn't leave an exporter opened.
+	resource, err := newResource(serviceName)
+	if err != nil {
+		return nil, err
+	}
+
 	ctx := context.Background()
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithInsecure(),
@@ -51,11 +57,6 @@ func NewTracer(serviceName string, opts ...func(*TracerOption)) (*sdktrace.Trace
 	}
 
 	bsp := sdktrace.NewBatchSpanProcessor(exporter)
-
-	resource, err := newResource(serviceName)
-	if err != nil {
-		return nil, err
-	}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(option.SampleRate))),
 		sdktrace.WithSpanProcessor(bsp),

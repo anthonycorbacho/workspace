@@ -66,10 +66,9 @@ func NewSubscriber(client *gcppubsub.Client, opts ...SubscriberOption) (*Subscri
 
 // Close notifies the Subscriber to stop processing messages on all subscriptions, and terminate the connection.
 func (s *Subscriber) Close() error {
-	if s.isClosed() {
+	if !s.markClosed() {
 		return nil
 	}
-	s.setClosed(true)
 	close(s.closing)
 
 	// wait for all subscribers
@@ -113,11 +112,18 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 		return err
 	}
 
-	// apply ReceiveSettings
-	sub.ReceiveSettings = s.settings
+	// registering the subscription and closing the subscriber are mutually exclusive,
+	// so Close never waits on a subscription added after it started.
+	s.closedLock.Lock()
+	if s.closed {
+		s.closedLock.Unlock()
+		cancelFn()
+		return pubsub.ErrSubscriberClosed
+	}
+	s.subscriptionsWaitGroup.Add(1)
+	s.closedLock.Unlock()
 
 	receiveFinished := make(chan struct{})
-	s.subscriptionsWaitGroup.Add(1)
 	go func(sub *gcppubsub.Subscriber, handler pubsub.HandlerWithAck) {
 
 		// utilise exponential Backoff on the subscription to give room to breeze.
@@ -147,7 +153,10 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 
 	// terminate the subscription
 	go func(cancelFn context.CancelFunc) {
-		<-s.closing
+		select {
+		case <-s.closing:
+		case <-receiveFinished:
+		}
 		cancelFn()
 	}(cancelFn)
 
@@ -226,15 +235,23 @@ func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gc
 	}
 
 	sub = s.client.Subscriber(subscription)
+	// set once as the subscriber is shared by all the subscriptions to the same subscription.
+	sub.ReceiveSettings = s.settings
 	s.activeSubscriptions[subscription] = sub
 	return sub, nil
 }
 
-func (s *Subscriber) setClosed(value bool) {
+// markClosed marks the subscriber as closed, it reports false if it was already closed
+// so concurrent calls to Close only release the resources once.
+func (s *Subscriber) markClosed() bool {
 	s.closedLock.Lock()
 	defer s.closedLock.Unlock()
 
-	s.closed = value
+	if s.closed {
+		return false
+	}
+	s.closed = true
+	return true
 }
 
 func (s *Subscriber) isClosed() bool {

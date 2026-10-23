@@ -32,9 +32,11 @@ func (m *Metrics) Register(name, help string, opts ...Option) error {
 	if err != nil {
 		return err
 	}
+	if err := prom.Register(mtr.Collector()); err != nil {
+		return err
+	}
 	m.metrics[name] = mtr
-
-	return prom.Register(mtr.Collector())
+	return nil
 }
 
 // Increment adds the given value to a counter or gauge metric.
@@ -68,6 +70,8 @@ func (m *Metrics) Set(name string, val float64, labels ...string) error {
 // Observe observes the given value using a histogram or summary, or sets it as a gauge's value.
 // The name and labels must match a previously defined metric.
 func (m *Metrics) Observe(name string, val float64, labels ...string) error {
+	m.metricLock.RLock()
+	defer m.metricLock.RUnlock()
 	mtr, ok := m.metrics[name]
 	if !ok {
 		return errors.Newf("unknown metric '%s'", name)

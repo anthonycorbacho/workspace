@@ -42,7 +42,11 @@ func WithMaxConnIdleTime(d time.Duration) Option {
 	}
 }
 
-// WithStatementCacheMode defines the maximum amount of time a connection may be idle.
+// WithStatementCacheMode defines how the queries are sent to the database, it sets the pgx
+// default_query_exec_mode: cache_statement, cache_describe, describe_exec, exec or simple_protocol.
+//
+// The pgx v4 statement cache modes are also supported: prepare (cache_statement) and describe (cache_describe).
+// Use exec or simple_protocol when connecting through a pooler not supporting prepared statements (eg: pgbouncer).
 func WithStatementCacheMode(mode string) Option {
 	return func(o *options) {
 		o.StatementCacheMode = mode

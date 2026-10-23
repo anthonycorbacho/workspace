@@ -83,7 +83,7 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 	// Prepare attributes that will be passed to the pubsub
 	attributes := paho.UserProperties{}
 	attributes.Add("topic", topic)
-	tracingAttributes(span, attributes)
+	attributes = tracingAttributes(span, attributes)
 	// add custom user attributes
 	for k, v := range options.Attributes {
 		attributes.Add(k, v)

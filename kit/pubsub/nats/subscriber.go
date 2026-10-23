@@ -65,10 +65,9 @@ func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.J
 // It is caller's responsibility to configure client's connection's `DrainTimeout` and `ClosedHandler` (with WaitGroup)
 // https://docs.nats.io/using-nats/developer/receiving/drain
 func (s *Subscriber) Close() error {
-	if s.isClosed() {
+	if !s.markClosed() {
 		return nil
 	}
-	s.setClosed(true)
 	close(s.closing)
 
 	if s.nc.IsClosed() {
@@ -97,7 +96,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subje
 }
 
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
-	if s.nc.IsClosed() {
+	if s.isClosed() || s.nc.IsClosed() {
 		return pubsub.ErrSubscriberClosed
 	}
 	if len(subscription) == 0 {
@@ -171,11 +170,17 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 	}
 }
 
-func (s *Subscriber) setClosed(value bool) {
+// markClosed marks the subscriber as closed, it reports false if it was already closed
+// so concurrent calls to Close only release the resources once.
+func (s *Subscriber) markClosed() bool {
 	s.closedLock.Lock()
 	defer s.closedLock.Unlock()
 
-	s.closed = value
+	if s.closed {
+		return false
+	}
+	s.closed = true
+	return true
 }
 
 func (s *Subscriber) isClosed() bool {

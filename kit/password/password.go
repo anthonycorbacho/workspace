@@ -23,7 +23,10 @@ const _symbols = "~!@#$%^&*()_+-={}[]:<>?,."
 // the result.
 func Generate(length int, digits, symbols int) (string, error) {
 	if length < 8 {
-		return "", errors.New("password length should be higher than 8")
+		return "", errors.New("password length should be at least 8")
+	}
+	if digits < 0 || symbols < 0 {
+		return "", errors.New("number of digits and symbols must not be negative")
 	}
 
 	chars := length - digits - symbols

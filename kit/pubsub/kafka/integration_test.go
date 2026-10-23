@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type kafkaTestSuite struct {
@@ -81,4 +83,236 @@ func (suite *kafkaTestSuite) TestPublishAndSubscribe() {
 		assert.Fail(suite.T(), "timeout")
 
 	}
+}
+
+func (suite *kafkaTestSuite) TestConcurrentClose() {
+	c, err := NewClient([]string{suite.testURL}, WithClientID(fmt.Sprintf("test-client-%s", id.New())))
+	suite.Require().NoError(err)
+	subscriber, err := NewSubscriber(c)
+	suite.Require().NoError(err)
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Go(func() { suite.NoError(subscriber.Close()) })
+	}
+	wg.Wait()
+	suite.ErrorIs(subscriber.Subscribe(context.Background(), "my-topic", func(context.Context, pubsub.Message, map[string]string) error {
+		return nil
+	}), pubsub.ErrSubscriberClosed)
+}
+
+// kafkaTimeout is generous as joining a consumer group can take a few seconds.
+const kafkaTimeout = 20 * time.Second
+
+func (suite *kafkaTestSuite) newClient(opts ...Option) *Client {
+	opts = append([]Option{WithClientID(fmt.Sprintf("test-client-%s", id.New()))}, opts...)
+	c, err := NewClient([]string{suite.testURL}, opts...)
+	suite.Require().NoError(err)
+	return c
+}
+
+// publish publishes the messages with a dedicated client, creating the topic if needed.
+func (suite *kafkaTestSuite) publish(topic string, msgs ...string) {
+	p, err := NewPublisher(suite.newClient(WithAutoTopicCreation()))
+	suite.Require().NoError(err)
+	defer p.Close()
+	for _, m := range msgs {
+		suite.Require().NoError(p.Publish(context.Background(), topic, []byte(m)))
+	}
+}
+
+func (suite *kafkaTestSuite) TestPublishAndSubscribeMetadata() {
+	topic := fmt.Sprintf("kit-meta-%s", id.New())
+
+	type received struct {
+		msg      string
+		metadata map[string]string
+		topic    string
+		traceID  trace.TraceID
+	}
+	ch := make(chan received, 1)
+	s, err := NewSubscriber(suite.newClient(WithConsumerGroup("group-"+id.New()), WithAutoCommit()))
+	suite.Require().NoError(err)
+	defer s.Close()
+
+	p, err := NewPublisher(suite.newClient(WithAutoTopicCreation()))
+	suite.Require().NoError(err)
+	defer p.Close()
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	err = p.Publish(ctx, topic, []byte("hello"), pubsub.WithKey("key-1"), pubsub.WithAttributes(map[string]string{"attb1": "value"}))
+	suite.Require().NoError(err)
+
+	err = s.Subscribe(context.Background(), topic, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
+		ch <- received{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx), traceID: trace.SpanContextFromContext(ctx).TraceID()}
+		return nil
+	})
+	suite.Require().NoError(err)
+
+	select {
+	case r := <-ch:
+		suite.Equal("hello", r.msg)
+		suite.Equal(topic, r.topic)
+		suite.Equal(topic, r.metadata["topic"])
+		suite.Equal("value", r.metadata["attb1"])
+		suite.Equal("true", r.metadata["trace-sampled"])
+		suite.Contains(r.metadata, "partition")
+		suite.Contains(r.metadata, "offset")
+		suite.Equal(sc.TraceID(), r.traceID)
+	case <-time.After(kafkaTimeout):
+		suite.FailNow("timeout waiting for message")
+	}
+}
+
+func (suite *kafkaTestSuite) TestHandlerErrorKeepsSubscription() {
+	topic := fmt.Sprintf("kit-err-%s", id.New())
+	suite.publish(topic, "first", "second")
+
+	s, err := NewSubscriber(suite.newClient())
+	suite.Require().NoError(err)
+	defer s.Close()
+
+	ch := make(chan string, 2)
+	err = s.Subscribe(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+		ch <- msg.String()
+		return fmt.Errorf("handler failed for %s", msg)
+	})
+	suite.Require().NoError(err)
+
+	got := []string{}
+	for range 2 {
+		select {
+		case m := <-ch:
+			got = append(got, m)
+		case <-time.After(kafkaTimeout):
+			suite.FailNow("timeout waiting for messages")
+		}
+	}
+	suite.Equal([]string{"first", "second"}, got)
+}
+
+// TestManualCommitRedelivery checks that with auto commit disabled, a message that is not acked
+// is redelivered to the next consumer of the group, while an acked one is not.
+func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
+	tests := []struct {
+		name      string
+		ack       bool
+		wantFirst string
+	}{
+		{name: "ack commits the offset", ack: true, wantFirst: "m2"},
+		{name: "nack keeps the offset", ack: false, wantFirst: "m1"},
+	}
+	for _, tt := range tests {
+		suite.Run(tt.name, func() {
+			topic := fmt.Sprintf("kit-commit-%s", id.New())
+			group := fmt.Sprintf("group-%s", id.New())
+			suite.publish(topic, "m1")
+
+			// first consumer handles m1 then leaves the group.
+			s1, err := NewSubscriber(suite.newClient(WithConsumerGroup(group)))
+			suite.Require().NoError(err)
+			handled := make(chan string, 1)
+			err = s1.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
+				if tt.ack {
+					ack()
+				} else {
+					nack()
+				}
+				select {
+				case handled <- msg.String():
+				default:
+				}
+				return nil
+			})
+			suite.Require().NoError(err)
+			select {
+			case m := <-handled:
+				suite.Equal("m1", m)
+			case <-time.After(kafkaTimeout):
+				suite.FailNow("timeout waiting for first delivery")
+			}
+			suite.Require().NoError(s1.Close())
+
+			suite.publish(topic, "m2")
+
+			// second consumer of the same group resumes from the committed offset.
+			s2, err := NewSubscriber(suite.newClient(WithConsumerGroup(group)))
+			suite.Require().NoError(err)
+			defer s2.Close()
+			first := make(chan string, 1)
+			err = s2.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), _ func()) error {
+				ack()
+				select {
+				case first <- msg.String():
+				default:
+				}
+				return nil
+			})
+			suite.Require().NoError(err)
+			select {
+			case m := <-first:
+				suite.Equal(tt.wantFirst, m)
+			case <-time.After(kafkaTimeout):
+				suite.FailNow("timeout waiting for second delivery")
+			}
+		})
+	}
+}
+
+func (suite *kafkaTestSuite) TestRegexSubscription() {
+	prefix := fmt.Sprintf("kit-regex-%s", id.New())
+	ordersTopic := prefix + "-orders"
+	usersTopic := prefix + "-users"
+	// topics must exist before the regex consumer fetches the metadata.
+	suite.publish(ordersTopic, "order")
+	suite.publish(usersTopic, "user")
+
+	ordersPattern := "^" + prefix + "-orders.*"
+	usersPattern := "^" + prefix + "-users.*"
+	s, err := NewSubscriber(suite.newClient(WithRegex([]string{ordersPattern, usersPattern})))
+	suite.Require().NoError(err)
+	defer s.Close()
+
+	type received struct {
+		pattern string
+		topic   string
+		msg     string
+	}
+	ch := make(chan received, 2)
+	handlerFor := func(pattern string) pubsub.Handler {
+		return func(ctx context.Context, msg pubsub.Message, _ map[string]string) error {
+			ch <- received{pattern: pattern, topic: pubsub.GetTopic(ctx), msg: msg.String()}
+			return nil
+		}
+	}
+	suite.Require().NoError(s.Subscribe(context.Background(), ordersPattern, handlerFor(ordersPattern)))
+	suite.Require().NoError(s.Subscribe(context.Background(), usersPattern, handlerFor(usersPattern)))
+	suite.Error(s.Subscribe(context.Background(), "^not-configured.*", handlerFor("")))
+
+	got := map[string]received{}
+	for range 2 {
+		select {
+		case r := <-ch:
+			got[r.msg] = r
+		case <-time.After(kafkaTimeout):
+			suite.FailNow("timeout waiting for messages")
+		}
+	}
+	suite.Equal(received{pattern: ordersPattern, topic: ordersTopic, msg: "order"}, got["order"])
+	suite.Equal(received{pattern: usersPattern, topic: usersTopic, msg: "user"}, got["user"])
+}
+
+func (suite *kafkaTestSuite) TestPublishCanceledContext() {
+	p, err := NewPublisher(suite.newClient(WithAutoTopicCreation()))
+	suite.Require().NoError(err)
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	suite.Error(p.Publish(ctx, fmt.Sprintf("kit-cancel-%s", id.New()), []byte("x")))
 }

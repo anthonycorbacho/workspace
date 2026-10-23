@@ -42,7 +42,7 @@ func (c *Config) Publisher(ctx context.Context) (kitpubsub.Publisher, func(), er
 		if c.NatsPublisher == nil {
 			return nil, noop, errors.New("nats publisher missing")
 		}
-		return c.NatsPublisher.publisher()
+		return c.NatsPublisher.publisher(ctx)
 	case "kafka-publisher":
 		if c.KafkaPublisher == nil {
 			return nil, noop, errors.New("kafka publisher missing")
@@ -116,20 +116,28 @@ func (gcppub *GcpPublisher) publisher(ctx context.Context) (kitpubsub.Publisher,
 	noop := func() {}
 	client, err := pubsub.NewClient(ctx, gcppub.Project)
 	if err != nil {
-		return nil, noop, err
+		return nil, noop, errors.Wrap(err, "creating gcp client")
 	}
 	pub, err := kitgcp.NewPublisher(client)
-	return pub, noop, err
+	if err != nil {
+		closeClient(ctx, client.Close)
+		return nil, noop, err
+	}
+	return pub, closer(ctx, "gcp publisher", pub.Close), nil
 }
 
 func (gcpsub *GcpSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
 	noop := func() {}
 	client, err := pubsub.NewClient(ctx, gcpsub.Project)
 	if err != nil {
-		return nil, noop, err
+		return nil, noop, errors.Wrap(err, "creating gcp client")
 	}
 	sub, err := kitgcp.NewSubscriber(client, gcpsub.withOptions()...)
-	return sub, noop, err
+	if err != nil {
+		closeClient(ctx, client.Close)
+		return nil, noop, err
+	}
+	return sub, closer(ctx, "gcp subscriber", sub.Close), nil
 }
 
 func (gcpsub *GcpSubscriber) withOptions() []kitgcp.SubscriberOption {
@@ -181,12 +189,13 @@ func natsConnection(conf *NatsConnection) (*nats.Conn, nats.JetStreamContext, er
 		return nil, nil, errors.Wrap(err, "failed to connect to nats")
 	}
 	// TODO: should we should save js connection to reuse them instead of creating new one
-	jsOpts := []nats.JSOpt{}
+	var jsOpts []nats.JSOpt
 	if conf.PublishAsyncMaxPending > 0 {
-		jsOpts = append(jsOpts, nats.PublishAsyncMaxPending(256))
+		jsOpts = append(jsOpts, nats.PublishAsyncMaxPending(conf.PublishAsyncMaxPending))
 	}
 	js, err := con.JetStream(jsOpts...)
 	if err != nil {
+		con.Close()
 		return nil, nil, errors.Wrap(err, "failed to get jetstream")
 	}
 	return con, js, nil
@@ -207,37 +216,62 @@ type NatsSubscriber struct {
 	ConsumerGroupName string `yaml:"consumerGroupName"`
 }
 
-func (natspub *NatsPublisher) publisher() (kitpubsub.Publisher, func(), error) {
+func (natspub *NatsPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, func(), error) {
 	noop := func() {}
 	con, js, err := natsConnection(&natspub.NatsConnection)
 	if err != nil {
-		return nil, noop, errors.Wrap(err, "")
+		return nil, noop, err
 	}
 	pub, err := kitnats.NewPublisher(con, js)
-	return pub, noop, err
+	if err != nil {
+		con.Close()
+		return nil, noop, err
+	}
+	// Close drains the connection, pending messages are published before the connection is closed.
+	return pub, closer(ctx, "nats publisher", pub.Close), nil
 }
 
 func (natssub *NatsSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
 	noop := func() {}
 	con, js, err := natsConnection(&natssub.NatsConnection)
 	if err != nil {
-		return nil, noop, errors.Wrap(err, "")
+		return nil, noop, err
 	}
 	cons, err := js.ConsumerInfo(natssub.Stream, natssub.ConsumerName)
 	if err != nil {
+		con.Close()
 		return nil, noop, errors.Wrap(err, "failed to get consumer info")
 	}
 
 	sub, err := kitnats.NewSubscriber(natssub.ConsumerGroupName, con, js, cons)
 	if err != nil {
-		return nil, noop, errors.Wrap(err, "failed to get consumer info")
+		con.Close()
+		return nil, noop, errors.Wrap(err, "failed to create nats subscriber")
 	}
 	closeFn := func() {
-		err := sub.Close()
-		con.Close()
-		if err != nil {
+		// Close drains the connection and closes it once drained,
+		// the connection is only closed here when draining failed.
+		if err := sub.Close(); err != nil {
 			log.L().Warn(ctx, "failed to close nats sub", log.Error(err))
+			con.Close()
 		}
 	}
 	return sub, closeFn, nil
+}
+
+// closer returns a function closing a publisher or subscriber and logging the failure,
+// closing is done on shutdown where the error can't be handled by the caller.
+func closer(ctx context.Context, name string, closeFn func() error) func() {
+	return func() {
+		if err := closeFn(); err != nil {
+			log.L().Warn(ctx, "failed to close "+name, log.Error(err))
+		}
+	}
+}
+
+// closeClient closes a client on a constructor error path, the constructor error is returned instead.
+func closeClient(ctx context.Context, closeFn func() error) {
+	if err := closeFn(); err != nil {
+		log.L().Warn(ctx, "failed to close client", log.Error(err))
+	}
 }

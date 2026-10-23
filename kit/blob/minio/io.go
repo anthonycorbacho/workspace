@@ -19,11 +19,21 @@ var (
 type pipe struct {
 	pr *io.PipeReader
 	pw *io.PipeWriter
+	// finished is closed once the upload reading from the pipe completed, err holds its result.
+	finished chan struct{}
+	err      error
 }
 
 func newPipe() *pipe {
 	pr, pw := io.Pipe()
-	return &pipe{pr, pw}
+	return &pipe{pr: pr, pw: pw, finished: make(chan struct{})}
+}
+
+// finish records the upload result and unblocks Close.
+func (w *pipe) finish(err error) {
+	w.err = err
+	w.pr.CloseWithError(err)
+	close(w.finished)
 }
 
 // read is a small wrapper around io.WriteCloser to handle the errors of minio
@@ -40,11 +50,16 @@ func (w *pipe) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Close implements io.WriteCloser
+// Close implements io.WriteCloser.
+// It waits for the upload to complete so the upload error is not lost.
 func (w *pipe) Close() error {
 	err := w.pw.Close()
 	if err != nil {
 		return errors.Wrap(blob.ErrInternal, err.Error())
+	}
+	<-w.finished
+	if w.err != nil {
+		return toBlobErr(w.err)
 	}
 	return nil
 }

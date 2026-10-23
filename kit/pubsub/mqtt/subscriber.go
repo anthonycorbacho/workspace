@@ -27,7 +27,7 @@ type Subscriber struct {
 // It required a call to Close in order to stop processing messages.
 func NewSubscriber(client *Client) (*Subscriber, error) {
 	if client == nil {
-		return nil, fmt.Errorf("pubsub client is nil")
+		return nil, pubsub.ErrNilClient
 	}
 
 	return &Subscriber{
@@ -37,10 +37,9 @@ func NewSubscriber(client *Client) (*Subscriber, error) {
 
 // Close notifies the Subscriber to stop processing messages, send all the remaining messages and close the connection.
 func (s *Subscriber) Close() error {
-	if s.isClosed() {
+	if !s.markClosed() {
 		return nil
 	}
-	s.setClosed(true)
 
 	ctx, fn := context.WithTimeout(context.Background(), 10*time.Second)
 	defer fn()
@@ -108,11 +107,17 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 	return err
 }
 
-func (s *Subscriber) setClosed(value bool) {
+// markClosed marks the subscriber as closed, it reports false if it was already closed
+// so concurrent calls to Close only release the resources once.
+func (s *Subscriber) markClosed() bool {
 	s.closeLock.Lock()
 	defer s.closeLock.Unlock()
 
-	s.closed = value
+	if s.closed {
+		return false
+	}
+	s.closed = true
+	return true
 }
 
 func (s *Subscriber) isClosed() bool {

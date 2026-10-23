@@ -12,11 +12,15 @@ import (
 // tracer represent a MQTT pubsub tracer
 var tracer = otel.Tracer("kit/pubsub/mqtt")
 
-func tracingAttributes(span trace.Span, m mqtt.UserProperties) {
+// tracingAttributes returns the user properties with the tracing attributes added,
+// properties are returned since UserProperties.Add appends to the slice.
+func tracingAttributes(span trace.Span, m mqtt.UserProperties) mqtt.UserProperties {
 	m.Add("trace", span.SpanContext().TraceID().String())
 	m.Add("span", span.SpanContext().SpanID().String())
 	m.Add("trace-state", span.SpanContext().TraceState().String())
 	m.Add("trace-remote", strconv.FormatBool(span.SpanContext().IsRemote()))
+	m.Add("trace-sampled", strconv.FormatBool(span.SpanContext().IsSampled()))
+	return m
 }
 
 func contextFromTracingAttributes(ctx context.Context, m mqtt.UserProperties) context.Context {
@@ -39,10 +43,15 @@ func contextFromTracingAttributes(ctx context.Context, m mqtt.UserProperties) co
 		return ctx
 	}
 
+	// the flag is written with strconv.FormatBool, a missing flag (eg: message published
+	// by an older version) is considered not sampled.
+	sampled := m.Get("trace-sampled") == "true"
+
 	scc := trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     spanID,
 		TraceState: stats,
+		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
 		Remote:     remote,
 	}
 

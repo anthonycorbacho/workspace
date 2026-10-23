@@ -21,7 +21,9 @@ import (
 	"github.com/anthonycorbacho/workspace/kit/telemetry"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/klauspost/compress/gzhttp"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
+	httpmetrics "github.com/slok/go-http-metrics/metrics"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -30,10 +32,16 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// httpMetricsRecorder returns the HTTP metrics recorder, it is created once since its
+// collectors are registered in the default prometheus registry.
+var httpMetricsRecorder = sync.OnceValue(func() httpmetrics.Recorder {
+	return metrics.NewRecorder(metrics.Config{})
+})
+
 // defaultHealthHandler provides a default health function.
 var _defaultHealthHandler = func(writer http.ResponseWriter, _ *http.Request) {
-	writer.WriteHeader(http.StatusOK)
 	writer.Header().Set("Content-Type", "text/plain")
+	writer.WriteHeader(http.StatusOK)
 	fmt.Fprintln(writer, "ok") //nolint
 }
 
@@ -51,6 +59,7 @@ type Foundation struct {
 	// gRPC gateway
 	gw       *runtime.ServeMux
 	gwClient *grpc.ClientConn
+	gwErr    error
 	gwOnce   sync.Once
 	// gRPC server
 	grpcServer *grpc.Server
@@ -90,6 +99,8 @@ func NewFoundation(name string, options ...Option) (*Foundation, error) {
 	opts := &FoundationOptions{
 		httpAddr:         config.LookupEnv("FOUNDATION_HTTP_ADDRESS", "0.0.0.0:8080"),
 		grpcAddr:         config.LookupEnv("FOUNDATION_GRPC_ADDRESS", "0.0.0.0:8081"),
+		metricsAddr:      config.LookupEnv("FOUNDATION_METRICS_ADDRESS", ":9090"),
+		probesAddr:       config.LookupEnv("FOUNDATION_PROBES_ADDRESS", ":9091"),
 		httpWriteTimeout: 15 * time.Second,
 		httpReadTimeout:  15 * time.Second,
 		logger:           log.NewNop(),
@@ -136,7 +147,7 @@ func (f *Foundation) initHTTPServerOnce() {
 		// the route pattern instead of the url path.
 		f.httpMetrics = middleware.New(middleware.Config{
 			Service:  name,
-			Recorder: metrics.NewRecorder(metrics.Config{}),
+			Recorder: httpMetricsRecorder(),
 		})
 
 		var h http.Handler = f.httpRouter
@@ -177,7 +188,9 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 		f.logger.Info(context.Background(), "initializing grpc-gateway")
 		conn, err := grpckit.NewClient(f.opts.grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			f.logger.Error(context.Background(), "fail creating grpc client for grpc-gateway", log.Error(err))
+			// reported by Serve, registering handlers with a nil connection would fail on every request.
+			f.gwErr = errors.Wrap(err, "creating grpc client for grpc-gateway")
+			return
 		}
 
 		f.gwClient = conn
@@ -217,6 +230,9 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 		f.gw = runtime.NewServeMux(muxOpts...)
 	})
 
+	if f.gwErr != nil {
+		return
+	}
 	fn(f.gw, f.gwClient)
 }
 
@@ -270,15 +286,21 @@ func handlerClosure(fn func() (string, error)) http.HandlerFunc {
 			status = http.StatusInternalServerError
 			msg = err.Error()
 		}
-		writer.WriteHeader(status)
 		writer.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintln(writer, msg)
+		writer.WriteHeader(status)
+		fmt.Fprintln(writer, msg) //nolint
 	}
 }
 
 // Serve configure and start serving request for the foundation service.
+//
+// It blocks until the process receives an interrupt or terminate signal, or until one of the servers fails.
 func (f *Foundation) Serve() error {
 	// GOMAXPROCS is container aware since go 1.25 (cgroup CPU limit), no need to set it.
+
+	if f.gwErr != nil {
+		return f.gwErr
+	}
 
 	// Setup telemetry
 	tracer, err := telemetry.NewTracer(f.name)
@@ -288,97 +310,149 @@ func (f *Foundation) Serve() error {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = tracer.Shutdown(ctx) //nolint
+		if err := tracer.Shutdown(ctx); err != nil {
+			f.logger.Warn(ctx, "shutting down tracer", log.Error(err))
+		}
 	}()
 
-	_, err = telemetry.NewMeter(f.name)
+	meter, err := telemetry.NewMeter(f.name)
 	if err != nil {
 		return errors.Wrap(err, "creating new meter")
 	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := meter.Shutdown(ctx); err != nil {
+			f.logger.Warn(ctx, "shutting down meter", log.Error(err))
+		}
+	}()
 
-	// register health probes and profiling
-	internalHTTP(f.logger, f.readinessProbe, f.livenessProbe)
+	// health probes, profiling and metrics are served on their own servers,
+	// so they are not exposed with the public HTTP server.
+	internalServers := []*http.Server{
+		{
+			Addr:        f.opts.probesAddr,
+			Handler:     internalRouter(f.readinessProbe, f.livenessProbe),
+			ReadTimeout: 15 * time.Second,
+		},
+		{
+			Addr:        f.opts.metricsAddr,
+			Handler:     metricsRouter(),
+			ReadTimeout: 15 * time.Second,
+		},
+	}
 
 	// shutdown channel to listen for an interrupt or terminate signal from the OS.
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(shutdown)
 
-	// Make a channel to listen for errors coming from the listener. Use a
-	// buffered channel so the goroutine can exit if we don't collect this error.
-	serverError := make(chan error, 1)
+	// Make a channel to listen for errors coming from the listeners. It is buffered
+	// for every server so the goroutines can exit if we don't collect their error.
+	serverError := make(chan error, len(internalServers)+2)
 
-	// start the grpc server
-	go func(serverError chan error) {
-		// No GRPC server set up.
-		if f.grpcServer == nil {
-			return
-		}
+	for _, srv := range internalServers {
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverError <- errors.Wrapf(err, "internal server %s", srv.Addr)
+			}
+		}()
+	}
 
-		// enable grpc metrics
-		// This operation needs to be done after user register the proto to the server.
-		grpckit.InitializeMetrics(f.grpcServer)
+	if err := f.startGRPCServer(serverError); err != nil {
+		shutdownServers(f.logger, internalServers...)
+		return err
+	}
+	f.startHTTPServer(serverError)
 
-		// Create listener for the grpc server
-		listen, err := net.Listen("tcp", f.opts.grpcAddr)
-		if err != nil {
-			serverError <- errors.Wrap(err, "init net listener")
-		}
-		serverError <- f.grpcServer.Serve(listen)
-		_ = listen.Close() //nolint
-	}(serverError)
+	f.logger.Info(context.Background(), "service started", log.String("service-name", f.name))
 
-	// start the http server
-	go func(serverError chan error) {
-		// No HTTP server set up.
-		if f.httpServer == nil {
-			return
-		}
-
-		// init the http server
-		if f.gw != nil {
-			// the gateway handles all the requests not matching a registered HTTP handler.
-			f.httpRouter.Handle("/", f.gw)
-		}
-		serverError <- f.httpServer.ListenAndServe()
-	}(serverError)
-
-	f.logger.Debug(context.Background(), "service started", log.String("service-name", f.name))
-
+	var serveErr error
 	select {
-	case err := <-serverError:
-		return errors.Wrap(err, "server error")
+	case serveErr = <-serverError:
 	case <-shutdown:
+	}
 
-		// Terminate GRPC server if started
-		if f.grpcServer != nil {
-			f.grpcServer.GracefulStop()
-		}
+	// Terminate GRPC server if started
+	if f.grpcServer != nil {
+		f.grpcServer.GracefulStop()
+	}
 
-		// terminate the HTTP server if started.
-		if f.httpServer != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			_ = f.httpServer.Shutdown(ctx) //nolint
+	// terminate the HTTP servers if started.
+	servers := internalServers
+	if f.httpServer != nil {
+		servers = append(servers, f.httpServer)
+	}
+	shutdownServers(f.logger, servers...)
+
+	// the gateway client is closed once the HTTP server doesn't forward requests anymore.
+	if f.gwClient != nil {
+		if err := f.gwClient.Close(); err != nil {
+			f.logger.Warn(context.Background(), "closing grpc-gateway client", log.Error(err))
 		}
 	}
 
+	return serveErr
+}
+
+// startGRPCServer starts the gRPC server if services were registered,
+// the serving errors are sent to serverError.
+func (f *Foundation) startGRPCServer(serverError chan<- error) error {
+	if f.grpcServer == nil {
+		return nil
+	}
+
+	// enable grpc metrics
+	// This operation needs to be done after user register the proto to the server.
+	grpckit.InitializeMetrics(f.grpcServer)
+
+	// Create listener for the grpc server
+	listen, err := net.Listen("tcp", f.opts.grpcAddr)
+	if err != nil {
+		return errors.Wrap(err, "init net listener")
+	}
+	go func() {
+		// Serve closes the listener when it returns.
+		if err := f.grpcServer.Serve(listen); err != nil {
+			serverError <- errors.Wrap(err, "grpc server")
+		}
+	}()
 	return nil
 }
 
-// internalHTTP start a new http server for health checks and profiling.
-func internalHTTP(l *log.Logger, readiness http.HandlerFunc, liveliness http.HandlerFunc) {
-	// create http server with options
-	httpServer := http.Server{
-		Addr:        ":9091",
-		Handler:     internalRouter(readiness, liveliness),
-		ReadTimeout: 15 * time.Second,
+// startHTTPServer starts the HTTP server if handlers were registered,
+// the serving errors are sent to serverError.
+func (f *Foundation) startHTTPServer(serverError chan<- error) {
+	if f.httpServer == nil {
+		return
 	}
-
+	if f.gw != nil {
+		// the gateway handles all the requests not matching a registered HTTP handler.
+		f.httpRouter.Handle("/", f.gw)
+	}
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil {
-			l.Debug(context.TODO(), "fail to start probe server", log.Error(err))
+		if err := f.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverError <- errors.Wrap(err, "http server")
 		}
 	}()
+}
+
+// shutdownServers gracefully shuts down the given HTTP servers.
+func shutdownServers(l *log.Logger, servers ...*http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, srv := range servers {
+		if err := srv.Shutdown(ctx); err != nil {
+			l.Warn(ctx, "shutting down server", log.String("addr", srv.Addr), log.Error(err))
+		}
+	}
+}
+
+// metricsRouter returns the router exposing the prometheus metrics.
+func metricsRouter() *http.ServeMux {
+	r := http.NewServeMux()
+	r.Handle("GET /metrics", promhttp.Handler())
+	return r
 }
 
 // internalRouter returns the router for health checks and profiling.

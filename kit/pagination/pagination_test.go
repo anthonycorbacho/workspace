@@ -1,6 +1,7 @@
 package pagination
 
 import (
+	"encoding/base64"
 	"testing"
 
 	pb "github.com/anthonycorbacho/workspace/kit/pagination/v1"
@@ -23,6 +24,19 @@ func TestEncodeDecodeToken(t *testing.T) {
 			in:   &pb.PageIdentifier{Name: "device/myuuid"},
 			out:  "Q2cxa1pYWnBZMlV2YlhsMWRXbGs",
 		},
+		{
+			name: "should be able to encode filter only",
+			in:   &pb.PageIdentifier{Filter: "org_id = org/uuid"},
+		},
+		{
+			name: "should be able to encode empty name and filter",
+			in:   &pb.PageIdentifier{},
+			out:  "",
+		},
+		{
+			name: "should be able to encode unicode and url unsafe characters",
+			in:   &pb.PageIdentifier{Name: "device/é+?&=", Filter: "name = \"a b\" / ~"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -31,7 +45,7 @@ func TestEncodeDecodeToken(t *testing.T) {
 			if err != nil {
 				assert.Fail(t, "", "EncodeToken: %v", err)
 			}
-			if tc.out != gotToken {
+			if tc.out != "" && tc.out != gotToken {
 				assert.Fail(t, "", "EncodeToken want: %s, got %s", tc.out, gotToken)
 			}
 			gotName, gotFilter, err := DecodeToken(gotToken)
@@ -41,6 +55,29 @@ func TestEncodeDecodeToken(t *testing.T) {
 			if (tc.in.Name != gotName) || (tc.in.Filter != gotFilter) {
 				assert.Fail(t, "", "EncodeToken want: (%s, %s), got (%s, %s)", tc.in.Name, gotName, tc.in.Filter, gotFilter)
 			}
+		})
+	}
+}
+
+func TestDecodeTokenInvalid(t *testing.T) {
+	var cases = []struct {
+		name  string
+		token string
+	}{
+		{name: "not base64", token: "!!!"},
+		{name: "standard base64 padding", token: "Q2c="},
+		{name: "inner token not base64", token: base64.RawURLEncoding.EncodeToString([]byte("!!!"))},
+		{name: "inner token not a protobuf message", token: base64.RawURLEncoding.EncodeToString(
+			[]byte(base64.RawURLEncoding.EncodeToString([]byte{0xff, 0xff, 0xff})))},
+		{name: "single encoded token", token: "Cg1kZXZpY2UvbXl1dWlk"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name, filter, err := DecodeToken(tc.token)
+			assert.Error(t, err)
+			assert.Empty(t, name)
+			assert.Empty(t, filter)
 		})
 	}
 }
@@ -84,6 +121,30 @@ func TestBatcher(t *testing.T) {
 				{want: 1},
 			},
 		},
+		{
+			name:     "every fetched item matched",
+			pageSize: 100,
+			seq: []batchSequence{
+				{want: 100, fetched: 100},
+				{want: 100, fetched: 100},
+				{want: 100},
+			},
+		},
+		{
+			name:     "pageSize above max is capped",
+			pageSize: 5000,
+			seq: []batchSequence{
+				{want: 1000, fetched: 1000},
+				{want: 1000},
+			},
+		},
+		{
+			name:     "pageSize of 0",
+			pageSize: 0,
+			seq: []batchSequence{
+				{want: 0, fetched: 0},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -96,6 +157,36 @@ func TestBatcher(t *testing.T) {
 				}
 				b.Update(bs.fetched, got)
 			}
+		})
+	}
+}
+
+func TestBatcherUpdate(t *testing.T) {
+	var cases = []struct {
+		name    string
+		matched int
+		total   int
+		want    int
+	}{
+		{name: "half matched doubles the batch", matched: 50, total: 100, want: 200},
+		{name: "all matched", matched: 100, total: 100, want: 100},
+		{name: "low ratio is capped at max", matched: 1, total: 1000, want: 1000},
+		{name: "more matched than fetched shrinks the batch", matched: 200, total: 100, want: 50},
+		// nothing matched in the last batch, fetch as much as allowed.
+		{name: "nothing matched", matched: 0, total: 100, want: 1000},
+		// nothing fetched in the last batch (empty page), the batcher must
+		// still suggest a usable (positive) batch size.
+		{name: "nothing fetched", matched: 0, total: 0, want: 1000},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewBatcher(100, 1000)
+			b.Update(tc.matched, tc.total)
+			got := b.Next()
+			assert.Equal(t, tc.want, got)
+			assert.Positive(t, got)
+			assert.LessOrEqual(t, got, 1000)
 		})
 	}
 }

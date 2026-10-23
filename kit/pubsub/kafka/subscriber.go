@@ -59,11 +59,9 @@ func NewSubscriber(client *Client) (*Subscriber, error) {
 
 // Close notifies the Subscriber to stop processing messages and close the connection.
 func (s *Subscriber) Close() error {
-	if s.isClosed() {
+	if !s.markClosed() {
 		return nil
 	}
-
-	s.setClosed(true)
 	s.cancel()
 	s.client.Close()
 	return nil
@@ -265,11 +263,17 @@ func (s *Subscriber) matchHandlerByRegex(topic string) (pubsub.HandlerWithAck, e
 	return nil, fmt.Errorf("handler not found for topic %s", topic)
 }
 
-func (s *Subscriber) setClosed(value bool) {
+// markClosed marks the subscriber as closed, it reports false if it was already closed
+// so concurrent calls to Close only release the resources once.
+func (s *Subscriber) markClosed() bool {
 	s.closeLock.Lock()
 	defer s.closeLock.Unlock()
 
-	s.closed = value
+	if s.closed {
+		return false
+	}
+	s.closed = true
+	return true
 }
 
 func (s *Subscriber) isClosed() bool {
