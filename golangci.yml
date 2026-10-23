@@ -1,6 +1,8 @@
+version: "2"
+
 run:
-  # timeout for analysis, e.g. 30s, 5m, default is 1m
-  deadline: 5m
+  # timeout for analysis, e.g. 30s, 5m, default is none
+  timeout: 5m
 
   # do not include test
   tests: false
@@ -8,53 +10,61 @@ run:
   modules-download-mode: readonly
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - dupl
+    - errcheck
     - goconst
     - gocyclo
-    - gofmt
-    - revive
     - govet
     - ineffassign
     - lll
     - misspell
     - nakedret
+    - revive
+    - staticcheck
     - unparam
-    - errcheck
-    - goimports
-    - megacheck
-    - govet
     - unused
 
-# all available settings of specific linters
-linters-settings:
-  errcheck:
-    # report about not checking of errors in type assetions: `a := b.(MyStruct)`;
-    # default is false: such cases aren't reported by default.
-    check-type-assertions: false
+  # all available settings of specific linters
+  settings:
+    errcheck:
+      # report about not checking of errors in type assetions: `a := b.(MyStruct)`;
+      # default is false: such cases aren't reported by default.
+      check-type-assertions: false
 
-    # report about assignment of errors to blank identifier: `num, _ := strconv.Atoi(numStr)`;
-    # default is false: such cases aren't reported by default.
-    check-blank: true
-  govet:
-    # report about shadowed variables
-    check-shadowing: false
-  revive:
-    min-confidence: 0.8
-  gocyclo:
-    min-complexity: 16
-  dupl:
-    # tokens count to trigger issue, 150 by default
-    threshold: 150
-  goconst:
-    # minimal length of string constant, 3 by default
-    min-len: 3
-    # minimal occurrences count to trigger, 3 by default
-    min-occurrences: 3
-  lll:
-    line-length: 200
-    tab-width: 1
+      # report about assignment of errors to blank identifier: `num, _ := strconv.Atoi(numStr)`;
+      # default is false: such cases aren't reported by default.
+      check-blank: true
+    revive:
+      confidence: 0.8
+    gocyclo:
+      min-complexity: 16
+    dupl:
+      # tokens count to trigger issue, 150 by default
+      threshold: 150
+    goconst:
+      # minimal length of string constant, 3 by default
+      min-len: 3
+      # minimal occurrences count to trigger, 3 by default
+      min-occurrences: 3
+    lll:
+      line-length: 200
+      tab-width: 1
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
 
 issues:
   new: true

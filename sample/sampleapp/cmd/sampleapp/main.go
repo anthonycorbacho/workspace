@@ -44,12 +44,12 @@ func main() {
 
 	// Register the GRPC Server.
 	foundation.RegisterService(func(s *grpc.Server) {
-		pb.RegisterSampleAppServer(s, srv)
+		pb.RegisterSampleAppServiceServer(s, srv)
 	})
 
 	// Register the Service Handler.
 	foundation.RegisterServiceHandler(func(gw *runtime.ServeMux, conn *grpc.ClientConn) {
-		if err := pb.RegisterSampleAppHandler(ctx, gw, conn); err != nil {
+		if err := pb.RegisterSampleAppServiceHandler(ctx, gw, conn); err != nil {
 			l.Fatal(ctx, "fail registering gateway handler", log.Error(err))
 		}
 	})

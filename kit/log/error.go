@@ -11,7 +11,7 @@ import (
 func encodeError(key string, err error, enc zapcore.ObjectEncoder) (retErr error) {
 	defer func() {
 		if rerr := recover(); rerr != nil {
-			if v := reflect.ValueOf(err); v.Kind() == reflect.Ptr && v.IsNil() {
+			if v := reflect.ValueOf(err); v.Kind() == reflect.Pointer && v.IsNil() {
 				enc.AddString(key, "<nil>")
 				return
 			}
@@ -54,7 +54,7 @@ func (errs errArray) MarshalLogArray(arr zapcore.ArrayEncoder) error {
 	return nil
 }
 
-var _errArrayElemPool = sync.Pool{New: func() interface{} {
+var _errArrayElemPool = sync.Pool{New: func() any {
 	return &errArrayElem{}
 }}
 

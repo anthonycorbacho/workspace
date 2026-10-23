@@ -10,17 +10,17 @@ import (
 func TestEncodeDecodeToken(t *testing.T) {
 	var cases = []struct {
 		name string
-		in   pb.PageIdentifier
+		in   *pb.PageIdentifier
 		out  string
 	}{
 		{
 			name: "should be able to encode resource and filter",
-			in:   pb.PageIdentifier{Name: "device/myuuid", Filter: "org_id = org/uuid"},
+			in:   &pb.PageIdentifier{Name: "device/myuuid", Filter: "org_id = org/uuid"},
 			out:  "Q2cxa1pYWnBZMlV2YlhsMWRXbGtFaEZ2Y21kZmFXUWdQU0J2Y21jdmRYVnBaQQ",
 		},
 		{
 			name: "should be able to encode resource only",
-			in:   pb.PageIdentifier{Name: "device/myuuid"},
+			in:   &pb.PageIdentifier{Name: "device/myuuid"},
 			out:  "Q2cxa1pYWnBZMlV2YlhsMWRXbGs",
 		},
 	}

@@ -24,13 +24,13 @@ jobs:
       packages: write
       id-token: write
     steps:
-      - uses: actions/checkout@7884fcad6b5d53d10323aee724dc68d8b9096a2e
-      - uses: actions/setup-go@0caeaed6fd66a828038c2da3c0f662a42862658f
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.20
-      - uses: imjasonh/setup-ko@main
+          go-version-file: 'go.mod'
+      - uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
         with:
-          version: v0.12.0
+          version: v0.19.1
       - name: Build the image
         env:
           KO_DOCKER_REPO: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ inputs.namespace }}/${{ inputs.service }}

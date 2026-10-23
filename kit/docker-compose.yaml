@@ -1,5 +1,4 @@
 # Docker-compose for unit test of Kit framework
-version: '3.8'
 
 services:
 
@@ -26,7 +25,36 @@ services:
       - '4222:4222'
 
   pub-sub-emulator:
-    image: google/cloud-sdk:latest
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
     command: [ "gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=fake" ]
     ports:
       - "8085:8085"
+
+  # Kafka compatible broker
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --mode dev-container
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports:
+      - '19092:19092'
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./pubsub/mqtt/testdata/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    ports:
+      - '1883:1883'
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    command: server /data
+    environment:
+      - MINIO_ROOT_USER=miniouser
+      - MINIO_ROOT_PASSWORD=miniopwd
+    ports:
+      - '9000:9000'

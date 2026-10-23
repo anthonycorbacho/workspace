@@ -30,7 +30,7 @@ func (a *attributes) Add(field zap.Field) {
 	a.mutex.Unlock()
 }
 
-//nolint
+// nolint
 func (a attributes) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
@@ -107,10 +107,10 @@ func (a attributes) MarshalLogObject(enc zapcore.ObjectEncoder) error {
 	return err
 }
 
-func encodeStringer(key string, stringer interface{}, enc zapcore.ObjectEncoder) (retErr error) {
+func encodeStringer(key string, stringer any, enc zapcore.ObjectEncoder) (retErr error) {
 	defer func() {
 		if err := recover(); err != nil {
-			if v := reflect.ValueOf(stringer); v.Kind() == reflect.Ptr && v.IsNil() {
+			if v := reflect.ValueOf(stringer); v.Kind() == reflect.Pointer && v.IsNil() {
 				enc.AddString(key, "<nil>")
 				return
 			}

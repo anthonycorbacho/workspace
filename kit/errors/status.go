@@ -3,10 +3,10 @@ package errors
 import (
 	"fmt"
 
-	"github.com/anthonycorbacho/workspace/api/errdetails"
-	"github.com/golang/protobuf/proto" //nolint - required by st.WithDetails
+	errdetails "github.com/anthonycorbacho/workspace/api/errdetails/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/protoadapt"
 )
 
 // Status represents an RPC status code, message, and details. It is immutable.
@@ -37,9 +37,9 @@ import (
 func Status(code codes.Code, message string, details ...*errdetails.ErrorInfo) error {
 	st := status.New(code, message)
 
-	dd := make([]proto.Message, 0, len(details))
+	dd := make([]protoadapt.MessageV1, 0, len(details))
 	for _, d := range details {
-		dd = append(dd, d)
+		dd = append(dd, protoadapt.MessageV1Of(d))
 	}
 
 	st, err := st.WithDetails(dd...)

@@ -13,7 +13,7 @@ func New(message string) error {
 
 // Newf returns an error that formats according to a format specifier.
 // Each call to Newf returns a distinct error value even if the text is identical.
-func Newf(format string, args ...interface{}) error {
+func Newf(format string, args ...any) error {
 	return New(fmt.Sprintf(format, args...))
 }
 
@@ -31,7 +31,7 @@ func Wrap(err error, message string) error {
 // Wrapf returns an error annotating err with a stack trace
 // at the point Wrapf is called, and the format specifier.
 // If err is nil, Wrapf returns nil.
-func Wrapf(err error, format string, args ...interface{}) error {
+func Wrapf(err error, format string, args ...any) error {
 	if err == nil {
 		return nil
 	}
@@ -75,7 +75,7 @@ func Is(err, target error) bool {
 // pointed to by target, or if the error has a method As(interface{}) bool such that
 // As(target) returns true. In the latter case, the As method is responsible for
 // setting target.
-func As(err error, target interface{}) bool {
+func As(err error, target any) bool {
 	// standard library provide a As.
 	// To avoid importing multiple  errors package, we proxy the
 	// call to the standard errors so we keep the errors to the same package.

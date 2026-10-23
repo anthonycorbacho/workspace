@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.18.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
 // newResource return a new OTEL resource.

@@ -12,8 +12,8 @@ func supportedCodeGeneratorFeatures() uint64 {
 }
 
 func supportedEditions() (descriptorpb.Edition, descriptorpb.Edition) {
-	// Declare support for edition 2023 only
-	return descriptorpb.Edition_EDITION_2023, descriptorpb.Edition_EDITION_2023
+	// Declare support up to edition 2026
+	return descriptorpb.Edition_EDITION_2023, descriptorpb.Edition_EDITION_2026
 }
 
 // SetSupportedFeaturesOnPluginGen sets supported proto3 features

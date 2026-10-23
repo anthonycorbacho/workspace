@@ -6,13 +6,16 @@ import (
 	"sync"
 	"time"
 
-	gcppubsub "cloud.google.com/go/pubsub"
+	gcppubsub "cloud.google.com/go/pubsub/v2"
+	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	grpccodes "google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var _ pubsub.Subscriber = (*Subscriber)(nil)
@@ -29,7 +32,7 @@ type Subscriber struct {
 	closed                  bool
 	closedLock              sync.Mutex
 	subscriptionsWaitGroup  sync.WaitGroup
-	activeSubscriptions     map[string]*gcppubsub.Subscription
+	activeSubscriptions     map[string]*gcppubsub.Subscriber
 	activeSubscriptionsLock sync.RWMutex
 	client                  *gcppubsub.Client
 	settings                gcppubsub.ReceiveSettings
@@ -40,18 +43,11 @@ type Subscriber struct {
 // it required a call to Close in order to stop processing messages and close subscriber connections.
 func NewSubscriber(client *gcppubsub.Client, opts ...SubscriberOption) (*Subscriber, error) {
 	if client == nil {
-		return nil, fmt.Errorf("pubsub client is nil")
+		return nil, pubsub.ErrNilClient
 	}
 
 	// default receiveSettings
-	settings := gcppubsub.ReceiveSettings{
-		MaxExtension:           60 * time.Minute,
-		MaxExtensionPeriod:     0,
-		MinExtensionPeriod:     0,
-		MaxOutstandingMessages: 1000,
-		MaxOutstandingBytes:    1e9, // 1G
-		NumGoroutines:          10,
-	}
+	settings := gcppubsub.DefaultReceiveSettings
 	for _, o := range opts {
 		o(&settings)
 	}
@@ -62,7 +58,7 @@ func NewSubscriber(client *gcppubsub.Client, opts ...SubscriberOption) (*Subscri
 		closedLock:              sync.Mutex{},
 		subscriptionsWaitGroup:  sync.WaitGroup{},
 		activeSubscriptionsLock: sync.RWMutex{},
-		activeSubscriptions:     map[string]*gcppubsub.Subscription{},
+		activeSubscriptions:     map[string]*gcppubsub.Subscriber{},
 		client:                  client,
 		settings:                settings,
 	}, nil
@@ -92,10 +88,10 @@ func (s *Subscriber) Close() error {
 // See https://cloud.google.com/pubsub/docs/subscriber to find out more about how Google Cloud Pub/Sub Subscriptions work.
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler pubsub.Handler) error {
 
-	h := func(ctx context.Context, msg pubsub.Message, ack func(), nack func()) error {
+	h := func(ctx context.Context, msg pubsub.Message, metadata map[string]string, ack func(), nack func()) error {
 		// default behavior is to always ack.
 		ack()
-		return handler(ctx, msg)
+		return handler(ctx, msg, metadata)
 	}
 
 	return s.SubscribeWithAck(ctx, subscription, h)
@@ -103,7 +99,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler
 
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
 	if s.isClosed() {
-		return fmt.Errorf("subscriber is closed")
+		return pubsub.ErrSubscriberClosed
 	}
 
 	if len(subscription) == 0 {
@@ -122,27 +118,27 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 
 	receiveFinished := make(chan struct{})
 	s.subscriptionsWaitGroup.Add(1)
-	go func(sub *gcppubsub.Subscription, handler pubsub.HandlerWithAck) {
+	go func(sub *gcppubsub.Subscriber, handler pubsub.HandlerWithAck) {
 
 		// utilise exponential Backoff on the subscription to give room to breeze.
-		exponentialBackoff := backoff.NewExponentialBackOff()
-		exponentialBackoff.MaxElapsedTime = 0 // 0 means it never expires
-
-		if err := backoff.Retry(func() error {
+		if _, err := backoff.Retry(ctx, func() (struct{}, error) {
 			err := s.receive(ctx, sub, handler)
 			if err == nil {
 				// Receiving messages finished with no error
-				return nil
+				return struct{}{}, nil
 			}
 
 			// if the subscriber is closed, we will not retry anymore and exit.
 			if s.isClosed() {
-				return backoff.Permanent(err)
+				return struct{}{}, backoff.Permanent(err)
 			}
 
 			// Receiving messages failed, retrying
-			return err
-		}, exponentialBackoff); err != nil {
+			return struct{}{}, err
+		},
+			backoff.WithBackOff(backoff.NewExponentialBackOff()),
+			backoff.WithMaxElapsedTime(0), // 0 means it never expires
+		); err != nil && !s.isClosed() {
 			// Retrying receiving messages failed
 			fmt.Printf("retrying receiving messages failed: %s\n", err)
 		}
@@ -163,7 +159,7 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 	return nil
 }
 
-func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscription, handler pubsub.HandlerWithAck) error {
+func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscriber, handler pubsub.HandlerWithAck) error {
 	err := sub.Receive(ctx, func(ctx context.Context, m *gcppubsub.Message) {
 
 		select {
@@ -200,7 +196,7 @@ func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscription, h
 
 		// Process the message
 		// in case of error, we record and label the error in the span.
-		if err := handler(ctx, m.Data, ack, nack); err != nil {
+		if err := handler(ctx, m.Data, m.Attributes, ack, nack); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
@@ -208,7 +204,7 @@ func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscription, h
 	return err
 }
 
-func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gcppubsub.Subscription, error) {
+func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gcppubsub.Subscriber, error) {
 	s.activeSubscriptionsLock.RLock()
 	sub, ok := s.activeSubscriptions[subscription]
 	s.activeSubscriptionsLock.RUnlock()
@@ -219,16 +215,17 @@ func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gc
 	s.activeSubscriptionsLock.Lock()
 	defer s.activeSubscriptionsLock.Unlock()
 
-	sub = s.client.Subscription(subscription)
-	exists, err := sub.Exists(ctx)
+	_, err := s.client.SubscriptionAdminClient.GetSubscription(ctx, &pubsubpb.GetSubscriptionRequest{
+		Subscription: resourceName(s.client.Project(), "subscriptions", subscription),
+	})
+	if status.Code(err) == grpccodes.NotFound {
+		return nil, errors.Wrap(errors.New("subscription does not exist"), subscription)
+	}
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not check if subscription %s exists", subscription)
 	}
 
-	if !exists {
-		return nil, errors.Wrap(errors.New("subscription does not exist"), subscription)
-	}
-
+	sub = s.client.Subscriber(subscription)
 	s.activeSubscriptions[subscription] = sub
 	return sub, nil
 }
@@ -270,7 +267,7 @@ func WithMaxExtension(d time.Duration) SubscriberOption {
 // can be disabled by specifying a duration less than (or equal to) 0.
 func WithMaxExtensionPeriod(d time.Duration) SubscriberOption {
 	return func(o *gcppubsub.ReceiveSettings) {
-		o.MaxExtensionPeriod = d
+		o.MaxDurationPerAckExtension = d
 	}
 }
 
@@ -284,7 +281,7 @@ func WithMaxExtensionPeriod(d time.Duration) SubscriberOption {
 // which will be added in a future release.
 func WithMinExtensionPeriod(d time.Duration) SubscriberOption {
 	return func(o *gcppubsub.ReceiveSettings) {
-		o.MinExtensionPeriod = d
+		o.MinDurationPerAckExtension = d
 	}
 }
 
@@ -310,11 +307,10 @@ func WithMaxOutstandingBytes(n int) SubscriberOption {
 	}
 }
 
-// WithNumGoroutines defines the number of goroutines that each datastructure along
-// the Receive path will spawn. Adjusting this value adjusts concurrency
-// along the receive path.
+// WithNumGoroutines defines the number of StreamingPull streams used to pull messages
+// from the subscription.
 //
-// NumGoroutines defaults 10.
+// NumGoroutines defaults 1.
 //
 // NumGoroutines does not limit the number of messages that can be processed
 // concurrently. Even with one goroutine, many messages might be processed at

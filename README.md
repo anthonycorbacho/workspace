@@ -57,8 +57,7 @@ workspace/
 ├── .ko.yaml                      # Ko build settings
 ├── LICENSE                       # Workspace licensing
 ├── Makefile                      # Simple Makefile for short-cut. run command `make help`
-├── golangci.yml                  #  List of linting rules
-└── tools.go
+└── golangci.yml                  #  List of linting rules
 ```
 
 ### Observability
@@ -70,7 +69,7 @@ In order to have more context on the decision and guidelines, you can refer to t
 
 ## Requirements
 You need to have Go installed in your system.
-The minimal version of Go is `1.20`
+The minimal version of Go is `1.27`
 
 You can run `make onboarding` to see if you have required tools missing.
 
@@ -81,12 +80,7 @@ You can run `make onboarding` to see if you have required tools missing.
 - [helm](https://helm.sh/docs/intro/install/) `brew install helm`
 - [vendir](https://carvel.dev/vendir/docs/v0.32.0/install/) `brew tap vmware-tanzu/carvel; brew install vendir`
 - [Tilt](https://tilt.dev/) `brew install tilt`
-- [Buf](https://docs.buf.build/installation) and [Generate code](https://docs.buf.build/tour/generate-go-code) `brew install buf` with following binaries
-  - go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-  - go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-  - go install github.com/envoyproxy/protoc-gen-validate@latest
-  - go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest
-  - go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest
+- [Buf](https://buf.build/docs/installation) `brew install buf`, the protoc plugins are pinned in `go.mod` (`tool` directive) and run with `go tool`, no install needed.
 - [golangci-lint](https://github.com/golangci/golangci-lint) `brew install golangci-lint`
 - [kubeseal](https://github.com/bitnami-labs/sealed-secrets) `brew install kubeseal`
 - [mockery](https://github.com/vektra/mockery) `brew install mockery`

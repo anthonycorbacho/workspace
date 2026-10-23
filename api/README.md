@@ -2,28 +2,26 @@
 This folder contains the API definition of all service. It leverages protobuf and grpc-gateway.
 
 ## Installation
-Make sure you have Buf installed and buf module updated (run: `buf mod update`).
+Make sure you have [Buf](https://buf.build/docs/installation) installed.
 
-You'll use the protoc-gen-go and protoc-gen-go-grpc plugins to generate code with `buf generate`, so you'll need to install them:
-
-```shell
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-go install github.com/envoyproxy/protoc-gen-validate@latest
-go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway
-go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2
-```
-
-You also need to update your PATH so that buf can find the plugins:
+The protoc plugins (protoc-gen-go, protoc-gen-go-grpc, protoc-gen-grpc-gateway and protoc-gen-openapiv2) are pinned in the
+`go.mod` with the `tool` directive and run by buf with `go tool`, so there is nothing else to install.
 
 ```shell
-export PATH="$PATH:$(go env GOPATH)/bin"
+# update the buf dependencies (buf.lock)
+buf dep update
+# generate the code (or run `make proto-gen` from the root of the workspace)
+buf generate
 ```
+
+To update the plugins, run `go get -tool <plugin>@latest` from the root of the workspace.
 
 ## Validation
-We are using `envoyproxy/protoc-gen-validate` to validate proto fields and messages and, it will create `Validate` methods on the generated types.
+We are using [protovalidate](https://github.com/bufbuild/protovalidate) to validate proto fields and messages.
+The validation rules are enforced by the kit gRPC server (and client) interceptors, so invalid requests are rejected with an `InvalidArgument` error.
+A message can also be validated manually with `protovalidate.Validate(msg)`.
 
-See [Constraint Rules](https://github.com/bufbuild/protoc-gen-validate#constraint-rules)
+See [Standard rules](https://protovalidate.com/schemas/standard-rules/)
 
 eg:
 
@@ -32,21 +30,21 @@ syntax = "proto3";
 
 package examplepb;
 
-import "validate/validate.proto";
+import "buf/validate/validate.proto";
 
 message Person {
-  uint64 id    = 1 [(validate.rules).uint64.gt    = 999];
-  string email = 2 [(validate.rules).string.email = true];
-  string name  = 3 [(validate.rules).string = {
+  uint64 id    = 1 [(buf.validate.field).uint64.gt    = 999];
+  string email = 2 [(buf.validate.field).string.email = true];
+  string name  = 3 [(buf.validate.field).string = {
     pattern:   "^[^[0-9]A-Za-z]+( [^[0-9]A-Za-z]+)*$",
     max_bytes: 256,
   }];
 
-  Location home = 4 [(validate.rules).message.required = true];
+  Location home = 4 [(buf.validate.field).required = true];
 
   message Location {
-    double lat = 1 [(validate.rules).double = { gte: -90,  lte: 90 }];
-    double lng = 2 [(validate.rules).double = { gte: -180, lte: 180 }];
+    double lat = 1 [(buf.validate.field).double = { gte: -90,  lte: 90 }];
+    double lng = 2 [(buf.validate.field).double = { gte: -180, lte: 180 }];
   }
 }
 ```

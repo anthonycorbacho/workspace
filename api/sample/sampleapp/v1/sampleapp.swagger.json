@@ -6,7 +6,8 @@
   },
   "tags": [
     {
-      "name": "SampleApp"
+      "name": "SampleAppService",
+      "description": "SampleAppService is a example of API definition."
     }
   ],
   "host": "sampleapp.example.org",
@@ -23,7 +24,7 @@
     "/v1/users": {
       "post": {
         "summary": "Create a user.",
-        "operationId": "SampleApp_Create",
+        "operationId": "SampleAppService_Create",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -49,14 +50,14 @@
           }
         ],
         "tags": [
-          "SampleApp"
+          "SampleAppService"
         ]
       }
     },
     "/v1/users/{id}": {
       "get": {
         "summary": "Fetch a single user.",
-        "operationId": "SampleApp_Fetch",
+        "operationId": "SampleAppService_Fetch",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -80,12 +81,12 @@
           }
         ],
         "tags": [
-          "SampleApp"
+          "SampleAppService"
         ]
       },
       "delete": {
         "summary": "Delete users.",
-        "operationId": "SampleApp_Delete",
+        "operationId": "SampleAppService_Delete",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -109,7 +110,7 @@
           }
         ],
         "tags": [
-          "SampleApp"
+          "SampleAppService"
         ]
       }
     }
@@ -122,7 +123,7 @@
           "type": "string"
         }
       },
-      "additionalProperties": {}
+      "additionalProperties": true
     },
     "rpcStatus": {
       "type": "object",
@@ -137,6 +138,7 @@
         "details": {
           "type": "array",
           "items": {
+            "type": "object",
             "$ref": "#/definitions/protobufAny"
           }
         }

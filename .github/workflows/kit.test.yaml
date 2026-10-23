@@ -10,20 +10,23 @@ env:
   TESTINGREDIS_URL: ":6379"
   TESTINGNATS_URL: "nats://127.0.0.1:4222"
   PUBSUB_EMULATOR_HOST: ":8085"
+  TESTINGKAFKA_URL: "127.0.0.1:19092"
+  TESTINGMQTT_URL: "mqtt://127.0.0.1:1883"
+  MINIO_TEST_URL: "localhost:9000"
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Install Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v7
         with:
-          go-version: 1.20.x
+          go-version-file: 'go.mod'
       - name: Start up docker compose
-        run: docker-compose -f kit/docker-compose.yaml up -d --remove-orphans
+        run: docker compose -f kit/docker-compose.yaml up -d --remove-orphans
       - name: Run Kit Test
         run: go test -v -race -p=6 -cpu=1,4 ./kit/...
       - name: Stop containers
         if: always()
-        run: docker-compose -f kit/docker-compose.yaml down
+        run: docker compose -f kit/docker-compose.yaml down

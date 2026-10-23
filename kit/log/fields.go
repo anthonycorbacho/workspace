@@ -127,6 +127,6 @@ func Time(key string, val time.Time) Field {
 }
 
 // Any field.
-func Any(key string, val interface{}) Field {
+func Any(key string, val any) Field {
 	return zap.Any(key, val)
 }

@@ -6,21 +6,19 @@ import (
 	"io/fs"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/golang-migrate/migrate/v4/database/pgx"
+	"github.com/golang-migrate/migrate/v4"
+	pgx "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jmoiron/sqlx"
 	"github.com/uptrace/opentelemetry-go-extra/otelsql"
 	"github.com/uptrace/opentelemetry-go-extra/otelsqlx"
 	"github.com/xo/dburl"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	semconv "go.opentelemetry.io/otel/semconv/v1.18.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 
 	// force import pgx (postgres driver)
-	_ "github.com/jackc/pgx/v4/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // Open knows how to open a database connection based on connection string.
@@ -40,13 +38,10 @@ func Open(connection string, ops ...Option) (*sqlx.DB, error) {
 		driver = "pgx"
 	}
 
-	otelAttributes := otelsql.WithAttributes(attribute.KeyValue{
-		Key:   semconv.DBConnectionStringKey,
-		Value: attribute.StringValue(url.Host),
-	})
+	otelAttributes := otelsql.WithAttributes(semconv.ServerAddress(url.Hostname()))
 
 	// Connect to the database using the otel driver wrapper.
-	db, err := otelsqlx.Open(driver, connection, otelsql.WithAttributes(semconv.DBSystemPostgreSQL),
+	db, err := otelsqlx.Open(driver, connection, otelsql.WithAttributes(semconv.DBSystemNamePostgreSQL),
 		otelAttributes,
 	)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
+	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	nats "github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
@@ -71,7 +72,7 @@ func (s *Subscriber) Close() error {
 	close(s.closing)
 
 	if s.nc.IsClosed() {
-		return pubsub.SubscriberCLosed
+		return pubsub.ErrSubscriberClosed
 	}
 	return s.nc.Drain()
 }
@@ -86,10 +87,10 @@ func (s *Subscriber) Close() error {
 // Depending on the Consumer `DeliverPolicy`, `all`, `last`, `new`, `by_start_time`, `by_start_sequence`
 // persisted messages can be received
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subject */, handler pubsub.Handler) error {
-	h := func(ctx context.Context, msg pubsub.Message, ack func(), nack func()) error {
+	h := func(ctx context.Context, msg pubsub.Message, metadata map[string]string, ack func(), nack func()) error {
 		// default behavior is to always ack.
 		ack()
-		return handler(ctx, msg)
+		return handler(ctx, msg, metadata)
 	}
 
 	return s.SubscribeWithAck(ctx, subscription, h)
@@ -97,7 +98,7 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subje
 
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
 	if s.nc.IsClosed() {
-		return fmt.Errorf("subscriber is closed")
+		return pubsub.ErrSubscriberClosed
 	}
 	if len(subscription) == 0 {
 		return fmt.Errorf("subscription is nil")
@@ -125,10 +126,10 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 
 	select {
 	case <-s.closing:
-		msg.Nak()
+		nakOnClose(ctx, msg)
 		return
 	case <-ctx.Done():
-		msg.Nak()
+		nakOnClose(ctx, msg)
 		return
 	default:
 		// no-oop: responsibility of the caller
@@ -151,15 +152,19 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 	defer span.End()
 
 	ack := func() {
-		msg.Ack()
+		if err := msg.Ack(); err != nil {
+			span.RecordError(err)
+		}
 	}
 	nack := func() {
-		msg.Nak()
+		if err := msg.Nak(); err != nil {
+			span.RecordError(err)
+		}
 	}
 
 	// Process the message
 	// in case of error, we record and label the error in the span.
-	err := handler(ctx, msg.Data, ack, nack)
+	err := handler(ctx, msg.Data, firstHeaders, ack, nack)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -178,4 +183,12 @@ func (s *Subscriber) isClosed() bool {
 	defer s.closedLock.Unlock()
 
 	return s.closed
+}
+
+// nakOnClose negatively acknowledges a message received while the subscriber is closing,
+// so it can be redelivered.
+func nakOnClose(ctx context.Context, msg *nats.Msg) {
+	if err := msg.Nak(); err != nil {
+		log.L().Warn(ctx, "failed to nak message", log.Error(err))
+	}
 }

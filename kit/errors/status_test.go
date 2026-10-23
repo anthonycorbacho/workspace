@@ -3,7 +3,7 @@ package errors
 import (
 	"testing"
 
-	"github.com/anthonycorbacho/workspace/api/errdetails"
+	errdetails "github.com/anthonycorbacho/workspace/api/errdetails/v1"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -14,7 +14,7 @@ func TestStatus(t *testing.T) {
 		name    string
 		code    codes.Code
 		msg     string
-		details errdetails.ErrorInfo
+		details *errdetails.ErrorInfo
 	}{
 		{
 			name: "should be able to set Status error",
@@ -25,7 +25,7 @@ func TestStatus(t *testing.T) {
 			name: "should be able to set Status error with details",
 			code: codes.InvalidArgument,
 			msg:  "Bad argument",
-			details: errdetails.ErrorInfo{
+			details: &errdetails.ErrorInfo{
 				Reason: "MISSING_ARGUMENT",
 				Metadata: map[string]string{
 					"A": "B",
@@ -36,7 +36,11 @@ func TestStatus(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Status(tc.code, tc.msg, &tc.details)
+			var details []*errdetails.ErrorInfo
+			if tc.details != nil {
+				details = append(details, tc.details)
+			}
+			err := Status(tc.code, tc.msg, details...)
 			assert.NotNil(t, err)
 
 			st := status.Convert(err)

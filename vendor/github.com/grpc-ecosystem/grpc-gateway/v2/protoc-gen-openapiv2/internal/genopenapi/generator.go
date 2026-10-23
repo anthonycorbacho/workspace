@@ -12,7 +12,6 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	gen "github.com/grpc-ecosystem/grpc-gateway/v2/internal/generator"
-	openapioptions "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options"
 	"go.yaml.in/yaml/v3"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/grpclog"
@@ -369,13 +368,43 @@ func encodeOpenAPI(file *wrapper, format Format) (*descriptor.ResponseFile, erro
 	}, nil
 }
 
+func deprecateFieldsAndMethods(file *descriptor.File) {
+	for _, msg := range file.Messages {
+		for _, field := range msg.GetField() {
+			if field.Options == nil {
+				field.Options = &descriptorpb.FieldOptions{}
+			}
+			field.Options.Deprecated = proto.Bool(true)
+		}
+	}
+	for _, svc := range file.Services {
+		for _, method := range svc.GetMethod() {
+			if method.Options == nil {
+				method.Options = &descriptorpb.MethodOptions{}
+			}
+			method.Options.Deprecated = proto.Bool(true)
+		}
+	}
+}
+
 func (g *generator) Generate(targets []*descriptor.File) ([]*descriptor.ResponseFile, error) {
 	var files []*descriptor.ResponseFile
+	for _, f := range targets {
+		// Because of how the generator merges definitions, it is simpler to deprecate field and methods here if the file is deprecated
+		if opts := f.GetOptions(); opts != nil && opts.GetDeprecated() {
+			deprecateFieldsAndMethods(f)
+		}
+	}
 	if g.reg.IsAllowMerge() {
 		var mergedTarget *descriptor.File
-		// try to find proto leader
+		// try to find proto leader: the first file with file-level OpenAPI
+		// options, either from an annotation or from openapi_configuration.
 		for _, f := range targets {
-			if proto.HasExtension(f.Options, openapioptions.E_Openapiv2Swagger) {
+			opts, err := getFileOpenAPIOption(g.reg, f)
+			if err != nil {
+				return nil, err
+			}
+			if opts != nil {
 				mergedTarget = f
 				break
 			}

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	gcppubsub "cloud.google.com/go/pubsub"
+	gcppubsub "cloud.google.com/go/pubsub/v2"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -22,11 +22,11 @@ func TestSubscriberOption(t *testing.T) {
 	}
 
 	assert.Equal(t, gcppubsub.ReceiveSettings{
-		MaxExtension:           60 * time.Minute,
-		MaxExtensionPeriod:     time.Minute,
-		MinExtensionPeriod:     0,
-		MaxOutstandingMessages: 42,
-		MaxOutstandingBytes:    1e9,
-		NumGoroutines:          1,
+		MaxExtension:               60 * time.Minute,
+		MaxDurationPerAckExtension: time.Minute,
+		MinDurationPerAckExtension: 0,
+		MaxOutstandingMessages:     42,
+		MaxOutstandingBytes:        1e9,
+		NumGoroutines:              1,
 	}, s.settings)
 }

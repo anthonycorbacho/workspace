@@ -1,8 +1,9 @@
-// Package dburl provides a standard, [net/url.URL] style mechanism for parsing
-// and opening SQL database connection strings for Go. Provides standardized
-// way to parse and open [URL]'s for popular databases PostgreSQL, MySQL, SQLite3,
-// Oracle Database, Microsoft SQL Server, in addition to most other SQL
-// databases with a publicly available Go driver.
+// Package dburl parses and opens SQL database connection strings for Go, in
+// the style of [net/url.URL].
+//
+// It handles the URL formats of PostgreSQL, MySQL, SQLite3, Oracle Database
+// and Microsoft SQL Server. It also handles most other SQL databases that
+// have a public Go driver.
 //
 // See the [package documentation README section] for more details.
 //
@@ -18,12 +19,13 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
 // ResolveSchemeType is a configuration setting to open paths on disk using
 // [SchemeType], [Stat], and [OpenFile]. Set this to false in an `init()` func
-// in order to disable this behavior.
+// to disable this behavior.
 var ResolveSchemeType = true
 
 // Open takes a URL string, also known as a DSN, in the form of
@@ -36,11 +38,7 @@ func Open(urlstr string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	driver := u.Driver
-	if u.GoDriver != "" {
-		driver = u.GoDriver
-	}
-	return sql.Open(driver, u.DSN)
+	return sql.Open(u.Driver, u.DSN)
 }
 
 // OpenMap takes a map of URL components and opens a standard [sql.DB] connection.
@@ -54,25 +52,32 @@ func OpenMap(components map[string]any) (*sql.DB, error) {
 	return Open(urlstr)
 }
 
-// URL wraps the standard [net/url.URL] type, adding OriginalScheme, Transport,
-// Driver, Unaliased, and DSN strings.
+// URL wraps the standard [net/url.URL] type, adding the OriginalScheme,
+// Transport, SchemeName, Driver, Dialect and DSN strings.
 type URL struct {
 	// URL is the base [net/url.URL].
 	url.URL
+
 	// OriginalScheme is the original parsed scheme (ie, "sq", "mysql+unix", "sap", etc).
 	OriginalScheme string
 	// Transport is the specified transport protocol (ie, "tcp", "udp",
 	// "unix", ...), if provided.
 	Transport string
-	// Driver is the non-aliased SQL driver name that should be used in a call
-	// to [sql.Open].
+	// SchemeName is the [Scheme.Name] of the parsed scheme, with no alias, as
+	// "tidb" for ti:// and tidb://.
+	SchemeName string
+	// Driver is the name to pass to [sql.Open], which the Go driver
+	// registered. It is always set, and it is the SchemeName unless the
+	// scheme opens a driver of another name: tidb opens mysql, postgres and
+	// cockroachdb open pgx, pq opens postgres, and influxql opens influxdb.
 	Driver string
-	// GoDriver is the Go SQL driver name to use when opening a connection to
-	// the database. Used by Microsoft SQL Server's azuresql:// URLs, as the
-	// wire-compatible alias style uses a different syntax style.
-	GoDriver string
-	// UnaliasedDriver is the unaliased driver name.
-	UnaliasedDriver string
+	// Dialect is the [Scheme.Dialect] of the parsed scheme: the Name of the
+	// scheme that is canonical for the database product.
+	//
+	// Use it, and not Driver, to learn which product a URL connects to.
+	// Driver names the Go driver, so postgres:// and pgx:// both open pgx,
+	// and pq:// opens postgres. All three have the Dialect postgres.
+	Dialect string
 	// DSN is the built connection "data source name" that can be used in a
 	// call to [sql.Open].
 	DSN string
@@ -86,12 +91,12 @@ type URL struct {
 
 // Parse parses a URL string, similar to the standard [net/url.Parse].
 //
-// Handles parsing OriginalScheme, Transport, Driver, Unaliased, and DSN
-// fields.
+// Handles parsing the OriginalScheme, Transport, SchemeName, Driver, Dialect
+// and DSN fields.
 //
-// Note: if the URL has a Opaque component (ie, URLs not specified as
-// "scheme://" but "scheme:"), and the database scheme does not support opaque
-// components, Parse will attempt to re-process the URL as "scheme://<opaque>".
+// Note: an opaque URL is written "scheme:" and not "scheme://". When the
+// database scheme does not support an opaque component, Parse rebuilds the
+// URL as "scheme://<opaque>" and parses it again.
 func Parse(urlstr string) (*URL, error) {
 	// parse url
 	v, err := url.Parse(urlstr)
@@ -124,7 +129,7 @@ func Parse(urlstr string) (*URL, error) {
 	switch {
 	case !ok:
 		return nil, ErrUnknownDatabaseScheme
-	case scheme.Driver == "file":
+	case scheme.Name == "file":
 		// determine scheme for file
 		s := u.opaqueOrPath()
 		switch {
@@ -134,9 +139,13 @@ func Parse(urlstr string) (*URL, error) {
 		case s == "":
 			return nil, ErrMissingPath
 		case ResolveSchemeType:
-			if typ, err := SchemeType(s); err == nil {
-				return Parse(typ + "://" + u.buildOpaque())
+			// propagate the resolution error, as it reports why the path was
+			// not recognized (bad header, bad extension, ...)
+			typ, err := SchemeType(s)
+			if err != nil {
+				return nil, err
 			}
+			return Parse(typ + "://" + u.buildOpaque())
 		}
 		return nil, ErrUnknownFileExtension
 	case !scheme.Opaque && u.Opaque != "":
@@ -163,16 +172,56 @@ func Parse(urlstr string) (*URL, error) {
 			return nil, ErrInvalidTransportProtocol
 		}
 	}
-	// set driver
-	u.Driver, u.UnaliasedDriver = scheme.Driver, scheme.Driver
-	if scheme.Override != "" {
-		u.Driver = scheme.Override
-	}
-	// generate dsn
-	if u.DSN, u.GoDriver, err = scheme.Generator(u); err != nil {
+	// set the scheme, and the driver the generator names
+	u.SchemeName, u.Dialect = scheme.Name, scheme.Dialect
+	rawQuery := u.RawQuery
+	u.RawQuery = withDefaults(u.RawQuery, scheme.Defaults)
+	u.DSN, u.Driver, err = scheme.Generator(u)
+	u.RawQuery = rawQuery
+	if err != nil {
 		return nil, err
 	}
+	if u.Driver == "" {
+		u.Driver = scheme.Name
+	}
 	return u, nil
+}
+
+// withDefaults returns rawQuery with each default that the query does not name
+// appended, in the order of the sorted keys. A key that the query gives an
+// empty value counts as not named. The query the caller wrote keeps its
+// encoding, and a value the caller gave always wins (D65).
+func withDefaults(rawQuery string, defaults map[string]string) string {
+	if len(defaults) == 0 {
+		return rawQuery
+	}
+	q, _ := url.ParseQuery(rawQuery)
+	keys := make([]string, 0, len(defaults))
+	for k := range defaults {
+		if q.Get(k) == "" {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return rawQuery
+	}
+	sort.Strings(keys)
+	// an empty value that the caller wrote is dropped, so the default replaces it
+	var parts []string
+	for _, part := range strings.Split(rawQuery, "&") {
+		if part == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(part, "=")
+		if name, err := url.QueryUnescape(k); err == nil && v == "" && defaults[name] != "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	for _, k := range keys {
+		parts = append(parts, url.QueryEscape(k)+"="+url.QueryEscape(defaults[k]))
+	}
+	return strings.Join(parts, "&")
 }
 
 // FromMap creates a [URL] using the mapped components.
@@ -220,7 +269,7 @@ func (u *URL) Short() string {
 		return ""
 	}
 	s := schemeMap[u.Scheme].Aliases[0]
-	if u.Scheme == "odbc" || u.Scheme == "oleodbc" {
+	if u.Scheme == "odbc" {
 		n := u.Transport
 		if v, ok := schemeMap[n]; ok {
 			n = v.Aliases[0]
@@ -248,9 +297,12 @@ func (u *URL) Short() string {
 }
 
 // Normalize returns the driver, host, port, database, and user name of a URL,
-// joined with sep, populating blank fields with empty.
+// joined with sep, populating blank fields with empty. When cut is more than
+// 0, it drops the empty fields at the end, and keeps the last field that is
+// not empty and at least cut fields. It drops a field only when empty is
+// the empty string.
 func (u *URL) Normalize(sep, empty string, cut int) string {
-	s := []string{u.UnaliasedDriver, "", "", "", ""}
+	s := []string{u.SchemeName, "", "", "", ""}
 	if u.Transport != "tcp" && u.Transport != "unix" {
 		s[0] += "+" + u.Transport
 	}
@@ -274,12 +326,10 @@ func (u *URL) Normalize(sep, empty string, cut int) string {
 		}
 	}
 	if cut > 0 {
-		// cut to only populated fields
-		i := len(s) - 1
-		for ; i > cut; i-- {
-			if s[i] != "" {
-				break
-			}
+		// cut the empty fields at the end, and keep at least cut fields
+		i := len(s)
+		for i > cut && s[i-1] == "" {
+			i--
 		}
 		s = s[:i]
 	}
@@ -333,7 +383,7 @@ func SchemeType(name string) (string, error) {
 		}
 		return "", ErrUnknownFileHeader
 	}
-	// doesn't exist, match file extension
+	// does not exist, match file extension
 	ext := filepath.Ext(name)
 	for _, typ := range fileTypes {
 		if typ.ext.MatchString(ext) {
@@ -371,6 +421,8 @@ const (
 	ErrMissingPath Error = "missing path"
 	// ErrMissingUser is the missing user error.
 	ErrMissingUser Error = "missing user"
+	// ErrMissingDriver is the missing ODBC driver error.
+	ErrMissingDriver Error = "missing driver"
 	// ErrInvalidQuery is the invalid query error.
 	ErrInvalidQuery Error = "invalid query"
 )
@@ -422,13 +474,12 @@ func BuildURL(components map[string]any) (string, error) {
 		if port, ok := getComponent(components, "port"); ok {
 			hostinfo += ":" + port
 		}
-		var userinfo string
 		if user, ok := getComponent(components, "username", "user"); ok {
-			userinfo += url.QueryEscape(user)
+			userinfo := url.User(user)
 			if pass, ok := getComponent(components, "password", "pass"); ok {
-				userinfo += ":" + url.QueryEscape(pass)
+				userinfo = url.UserPassword(user, pass)
 			}
-			hostinfo = userinfo + "@" + hostinfo
+			hostinfo = userinfo.String() + "@" + hostinfo
 		}
 		urlstr += "//" + hostinfo
 	}
@@ -503,10 +554,11 @@ func resolveType(s string) (string, bool) {
 	return "", false
 }
 
-// resolveSocket tries to resolve a path to a Unix domain socket based on the
-// form "/path/to/socket/dbname" returning either the original path and the
-// empty string, or the components "/path/to/socket" and "dbname", when
-// /path/to/socket/dbname is reported by Stat as a socket.
+// resolveSocket tries to resolve a path of the form "/path/to/socket/dbname"
+// to a Unix domain socket.
+//
+// Returns "/path/to/socket" and "dbname" when Stat reports the path as a
+// socket. Returns the original path and the empty string when it does not.
 func resolveSocket(s string) (string, string) {
 	dir, dbname := s, ""
 	for dir != "" && dir != "/" && dir != "." {

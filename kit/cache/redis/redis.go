@@ -56,7 +56,7 @@ func (c *Cache) Close() error {
 	return c.client.Close()
 }
 
-func (c *Cache) Get(ctx context.Context, key string, value interface{}) error {
+func (c *Cache) Get(ctx context.Context, key string, value any) error {
 	if len(key) == 0 {
 		return cache.ErrKeyInvalid
 	}
@@ -75,7 +75,7 @@ func (c *Cache) Get(ctx context.Context, key string, value interface{}) error {
 	return cache.Unmarshal(b, value)
 }
 
-func (c *Cache) MultiGet(ctx context.Context, keys []string, value interface{}) error {
+func (c *Cache) MultiGet(ctx context.Context, keys []string, value any) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -83,7 +83,7 @@ func (c *Cache) MultiGet(ctx context.Context, keys []string, value interface{}) 
 	// Making sure that we are getting the correct interface
 	// we are expecting to get a &[]myType
 	typeOf := reflect.TypeOf(value)
-	if typeOf.Kind() != reflect.Ptr {
+	if typeOf.Kind() != reflect.Pointer {
 		return errors.New("value should be a pointer")
 	}
 
@@ -123,7 +123,7 @@ func (c *Cache) MultiGet(ctx context.Context, keys []string, value interface{}) 
 	return nil
 }
 
-func (c *Cache) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
+func (c *Cache) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
 	if len(key) == 0 {
 		return cache.ErrKeyInvalid
 	}

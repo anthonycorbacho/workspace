@@ -21,7 +21,7 @@ import (
 //			List []string
 //		} `yaml:"astruct"`
 //	}{}
-func From(in io.Reader, i interface{}) error {
+func From(in io.Reader, i any) error {
 	// Unmarshall the input to the given struct
 	if err := yaml.NewDecoder(in).Decode(i); err != nil {
 		return err
@@ -32,7 +32,7 @@ func From(in io.Reader, i interface{}) error {
 }
 
 // FromConfigMap read a config from the path `./config.yaml`.
-func FromConfigMap(i interface{}) error {
+func FromConfigMap(i any) error {
 	// because we want to be able to read file from env and configmap
 	// might not be given or mounted, we need to continue
 	b, err := os.ReadFile("/etc/app/config.yaml")

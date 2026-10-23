@@ -7,7 +7,7 @@ import (
 
 	pb "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1"
 	grpckit "github.com/anthonycorbacho/workspace/kit/grpc"
-	grpcretry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
+	grpcretry "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/retry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -24,7 +24,7 @@ func ExampleNewClient() {
 	}
 
 	// Pass the grpc client connection to the grpc client API
-	client := pb.NewSampleAppClient(cc)
+	client := pb.NewSampleAppServiceClient(cc)
 
 	// perform a client request
 	resp, err := client.Fetch(
@@ -53,7 +53,7 @@ func ExampleNewClient_withRetry() {
 	}
 
 	// Pass the grpc client connection to the grpc client API
-	client := pb.NewSampleAppClient(cc)
+	client := pb.NewSampleAppServiceClient(cc)
 
 	// perform a client request
 	resp, err := client.Fetch(
@@ -83,7 +83,7 @@ func ExampleNewClient_withRetryAndCodes() {
 	}
 
 	// Pass the grpc client connection to the grpc client API
-	client := pb.NewSampleAppClient(cc)
+	client := pb.NewSampleAppServiceClient(cc)
 
 	// perform a client request
 	resp, err := client.Fetch(
@@ -120,7 +120,7 @@ func ExampleNewClient_withCustomRetry() {
 	}
 
 	// Pass the grpc client connection to the grpc client API
-	client := pb.NewSampleAppClient(cc)
+	client := pb.NewSampleAppServiceClient(cc)
 
 	// perform a client request
 	// if the request fail with status `ResourceExhausted` or `Unavailable` or `Aborted`,

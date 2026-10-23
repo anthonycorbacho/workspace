@@ -4,9 +4,10 @@ import (
 	"context"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
 	"github.com/anthonycorbacho/workspace/kit/config"
 	"github.com/anthonycorbacho/workspace/kit/errors"
+	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	kitpubsub "github.com/anthonycorbacho/workspace/kit/pubsub"
 	kitgcp "github.com/anthonycorbacho/workspace/kit/pubsub/gcp"
@@ -16,84 +17,85 @@ import (
 
 // Config represent a PubSub configuration, it is defined by its kind.
 type Config struct {
-	Kind           string          `yaml:"kind"`
-	GcpPublisher   *GcpPublisher   `yaml:"gcpPublisher"`
-	GcpSubscriber  *GcpSubscriber  `yaml:"gcpSubscriber"`
-	NatsPublisher  *NatsPublisher  `yaml:"natsPublisher"`
-	NatsSubscriber *NatsSubscriber `yaml:"natsSubscriber"`
+	Kind            string           `yaml:"kind"`
+	GcpPublisher    *GcpPublisher    `yaml:"gcpPublisher"`
+	GcpSubscriber   *GcpSubscriber   `yaml:"gcpSubscriber"`
+	NatsPublisher   *NatsPublisher   `yaml:"natsPublisher"`
+	NatsSubscriber  *NatsSubscriber  `yaml:"natsSubscriber"`
+	KafkaPublisher  *KafkaPublisher  `yaml:"kafkaPublisher"`
+	KafkaSubscriber *KafkaSubscriber `yaml:"kafkaSubscriber"`
+	MqttPublisher   *MqttPublisher   `yaml:"mqttPublisher"`
+	MqttSubscriber  *MqttSubscriber  `yaml:"mqttSubscriber"`
 }
 
+// Publisher creates the publisher defined by the configuration kind.
+// The returned function must be called to release the publisher resources.
 func (c *Config) Publisher(ctx context.Context) (kitpubsub.Publisher, func(), error) {
-	closeFn := func() {}
+	noop := func() {}
 	switch c.Kind {
 	case "gcp-publisher":
 		if c.GcpPublisher == nil {
-			return nil, closeFn, errors.New("gcp publisher missing")
+			return nil, noop, errors.New("gcp publisher missing")
 		}
-		client, err := pubsub.NewClient(ctx, c.GcpPublisher.Project)
-		if err != nil {
-			return nil, closeFn, err
-		}
-		pub, err := kitgcp.NewPublisher(client)
-		return pub, closeFn, err
+		return c.GcpPublisher.publisher(ctx)
 	case "nats-publisher":
 		if c.NatsPublisher == nil {
-			return nil, closeFn, errors.New("nats publisher missing")
+			return nil, noop, errors.New("nats publisher missing")
 		}
-		conf := c.NatsPublisher
-		con, js, err := natsConnection(&conf.NatsConnection)
-		if err != nil {
-			return nil, closeFn, errors.Wrap(err, "")
+		return c.NatsPublisher.publisher()
+	case "kafka-publisher":
+		if c.KafkaPublisher == nil {
+			return nil, noop, errors.New("kafka publisher missing")
 		}
-		pub, err := kitnats.NewPublisher(con, js)
-		return pub, closeFn, err
+		return c.KafkaPublisher.publisher(ctx)
+	case "mqtt-publisher":
+		if c.MqttPublisher == nil {
+			return nil, noop, errors.New("mqtt publisher missing")
+		}
+		return c.MqttPublisher.publisher(ctx)
 	}
 
-	return nil, closeFn, errors.New("unknown pubsub provider")
+	return nil, noop, errors.New("unknown pubsub provider")
 }
 
+// Subscriber creates the subscriber defined by the configuration kind.
+// The returned function must be called to release the subscriber resources.
 func (c *Config) Subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
-	closeFn := func() {}
+	noop := func() {}
 	switch c.Kind {
 	case "gcp-subscriber":
 		if c.GcpSubscriber == nil {
-			return nil, closeFn, errors.New("gcp subscriber missing")
+			return nil, noop, errors.New("gcp subscriber missing")
 		}
-		client, err := pubsub.NewClient(ctx, c.GcpSubscriber.Project)
-		if err != nil {
-			return nil, closeFn, err
-		}
-		sub, err := kitgcp.NewSubscriber(client, c.GcpSubscriber.withOptions()...)
-		return sub, closeFn, err
+		return c.GcpSubscriber.subscriber(ctx)
 	case "nats-subscriber":
 		if c.NatsSubscriber == nil {
-			return nil, closeFn, errors.New("nats subscriber missing")
+			return nil, noop, errors.New("nats subscriber missing")
 		}
-		conf := c.NatsSubscriber
-		con, js, err := natsConnection(&conf.NatsConnection)
-		if err != nil {
-			return nil, closeFn, errors.Wrap(err, "")
+		return c.NatsSubscriber.subscriber(ctx)
+	case "kafka-subscriber":
+		if c.KafkaSubscriber == nil {
+			return nil, noop, errors.New("kafka subscriber missing")
 		}
-		cons, err := js.ConsumerInfo(conf.Stream, conf.ConsumerName)
-		if err != nil {
-			return nil, closeFn, errors.Wrap(err, "failed to get consumer info")
+		return c.KafkaSubscriber.subscriber(ctx)
+	case "mqtt-subscriber":
+		if c.MqttSubscriber == nil {
+			return nil, noop, errors.New("mqtt subscriber missing")
 		}
-
-		sub, err := kitnats.NewSubscriber(conf.ConsumerGroupName, con, js, cons)
-		if err != nil {
-			return nil, closeFn, errors.Wrap(err, "failed to get consumer info")
-		}
-		closeFn = func() {
-			err := sub.Close()
-			con.Close()
-			if err != nil {
-				log.L().Warn(ctx, "failed to close nats sub", log.Error(err))
-			}
-		}
-		return sub, closeFn, nil
+		return c.MqttSubscriber.subscriber(ctx)
 	}
 
-	return nil, closeFn, errors.New("unknown pubsub subscriber")
+	return nil, noop, errors.New("unknown pubsub subscriber")
+}
+
+// clientID returns a unique client identifier for brokers that require one (kafka, mqtt).
+// It must be unique per connection since mqtt brokers disconnect clients sharing the same id,
+// POD_NAME is used as prefix when available to ease debugging.
+func clientID(suffix string) string {
+	if podName := config.LookupEnv("POD_NAME", ""); podName != "" {
+		return podName + "-" + suffix + "-" + id.New()
+	}
+	return suffix + "-" + id.New()
 }
 
 type GcpPublisher struct {
@@ -108,6 +110,26 @@ type GcpSubscriber struct {
 	NumGoroutines          int           `yaml:"numGoroutines"`
 	MaxOutstandingBytes    int           `yaml:"maxOutstandingBytes"`
 	MaxOutstandingMessages int           `yaml:"maxOutstandingMessages"`
+}
+
+func (gcppub *GcpPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, func(), error) {
+	noop := func() {}
+	client, err := pubsub.NewClient(ctx, gcppub.Project)
+	if err != nil {
+		return nil, noop, err
+	}
+	pub, err := kitgcp.NewPublisher(client)
+	return pub, noop, err
+}
+
+func (gcpsub *GcpSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
+	noop := func() {}
+	client, err := pubsub.NewClient(ctx, gcpsub.Project)
+	if err != nil {
+		return nil, noop, err
+	}
+	sub, err := kitgcp.NewSubscriber(client, gcpsub.withOptions()...)
+	return sub, noop, err
 }
 
 func (gcpsub *GcpSubscriber) withOptions() []kitgcp.SubscriberOption {
@@ -183,4 +205,39 @@ type NatsSubscriber struct {
 	Stream            string `yaml:"stream"`
 	ConsumerName      string `yaml:"consumerName"`
 	ConsumerGroupName string `yaml:"consumerGroupName"`
+}
+
+func (natspub *NatsPublisher) publisher() (kitpubsub.Publisher, func(), error) {
+	noop := func() {}
+	con, js, err := natsConnection(&natspub.NatsConnection)
+	if err != nil {
+		return nil, noop, errors.Wrap(err, "")
+	}
+	pub, err := kitnats.NewPublisher(con, js)
+	return pub, noop, err
+}
+
+func (natssub *NatsSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
+	noop := func() {}
+	con, js, err := natsConnection(&natssub.NatsConnection)
+	if err != nil {
+		return nil, noop, errors.Wrap(err, "")
+	}
+	cons, err := js.ConsumerInfo(natssub.Stream, natssub.ConsumerName)
+	if err != nil {
+		return nil, noop, errors.Wrap(err, "failed to get consumer info")
+	}
+
+	sub, err := kitnats.NewSubscriber(natssub.ConsumerGroupName, con, js, cons)
+	if err != nil {
+		return nil, noop, errors.Wrap(err, "failed to get consumer info")
+	}
+	closeFn := func() {
+		err := sub.Close()
+		con.Close()
+		if err != nil {
+			log.L().Warn(ctx, "failed to close nats sub", log.Error(err))
+		}
+	}
+	return sub, closeFn, nil
 }

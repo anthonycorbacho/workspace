@@ -9,16 +9,15 @@
 //
 // example:
 //
-//		// creating a global unique ID.
-//		ID := id.New()
-//		// Output:
-//			9m4e2mr0ui3e8a215n4g
+//	// creating a global unique ID.
+//	ID := id.New()
+//	// Output:
+//		9m4e2mr0ui3e8a215n4g
 //
-//		// Generating prefixed ID in case you want to generate a lot of prefixed id
-//		//	eg: prefixed id for databases
-//		generator := id.NewGenerator("user")
-//		ID := generator.Generate()
-// 		//Output:
-//			user/9m4e2mr0ui3e8a215n4g
-//
+//	// Generating prefixed ID in case you want to generate a lot of prefixed id
+//	//	eg: prefixed id for databases
+//	generator := id.NewGenerator("user")
+//	ID := generator.Generate()
+//	//Output:
+//		user/9m4e2mr0ui3e8a215n4g
 package id

@@ -19,19 +19,15 @@ import (
 	grpckit "github.com/anthonycorbacho/workspace/kit/grpc"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/telemetry"
-	handlers "github.com/gorilla/handlers"
-	"github.com/gorilla/mux"
-	grpcprometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/klauspost/compress/gzhttp"
 	"github.com/rs/cors"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux"
-	"go.uber.org/automaxprocs/maxprocs"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // defaultHealthHandler provides a default health function.
@@ -60,9 +56,10 @@ type Foundation struct {
 	grpcServer *grpc.Server
 	grpcOnce   sync.Once
 	// HTTP server
-	httpServer *http.Server
-	httpRouter *mux.Router
-	httpOnce   sync.Once
+	httpServer  *http.Server
+	httpRouter  *http.ServeMux
+	httpMetrics middleware.Middleware
+	httpOnce    sync.Once
 	// Healths checks
 	livenessProbe  http.HandlerFunc
 	readinessProbe http.HandlerFunc
@@ -130,34 +127,37 @@ func (f *Foundation) initHTTPServerOnce() {
 		name := f.name
 
 		// create http router
-		r := mux.NewRouter()
-		r.Use(handlers.CompressHandler)
-
-		// Provide tracing for OTEL
-		r.Use(otelmux.Middleware(name, otelmux.WithSpanNameFormatter(func(routeName string, r *http.Request) string {
-			return fmt.Sprintf("[%s] %s", r.Method, r.RequestURI)
-		})))
+		f.httpRouter = http.NewServeMux()
 
 		// Provide Prometheus metric
 		// The metrics measured are based on RED and/or Four golden signals,
 		// follow standards and try to be measured in an efficient way.
-		r.Use(telemetry.Middleware(middleware.New(middleware.Config{
+		// The metric middleware is applied on each registered route in order to record
+		// the route pattern instead of the url path.
+		f.httpMetrics = middleware.New(middleware.Config{
 			Service:  name,
 			Recorder: metrics.NewRecorder(metrics.Config{}),
-		})))
+		})
 
-		r.StrictSlash(true)
+		var h http.Handler = f.httpRouter
 
 		// If cors is enabled, we should set it depending on the options
 		if opts.enableCors {
-			r.Use(cors.New(opts.corsOpts).Handler)
+			h = cors.New(opts.corsOpts).Handler(h)
 		}
 
-		f.httpRouter = r
+		// Provide tracing for OTEL
+		h = otelhttp.NewHandler(h, name, otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return fmt.Sprintf("[%s] %s", r.Method, r.RequestURI)
+		}))
+
+		// Compress the responses
+		h = gzhttp.GzipHandler(h)
+
 		// create http server with options
 		f.httpServer = &http.Server{
 			Addr:         opts.httpAddr,
-			Handler:      f.httpRouter,
+			Handler:      h,
 			WriteTimeout: opts.httpWriteTimeout,
 			ReadTimeout:  opts.httpReadTimeout,
 		}
@@ -184,6 +184,7 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 
 		muxOpts = append(
 			muxOpts,
+			runtime.WithMiddlewares(telemetry.GatewayMiddleware(f.httpMetrics)),
 			runtime.WithIncomingHeaderMatcher(func(s string) (string, bool) {
 				// Allowing passing custom headers
 				if strings.HasPrefix(s, "X-") {
@@ -193,10 +194,8 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 			}),
 			runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.HTTPBodyMarshaler{
 				Marshaler: &runtime.JSONPb{
-					MarshalOptions: protojson.MarshalOptions{
-						UseProtoNames:   true,
-						EmitUnpopulated: true,
-					},
+					UseProtoNames:   true,
+					EmitUnpopulated: true,
 				},
 			}),
 			runtime.WithMetadata(func(ctx context.Context, req *http.Request) metadata.MD {
@@ -222,10 +221,26 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 }
 
 // RegisterHTTPHandler registers a custom HTTP handler.
+//
+// The path follows the http.ServeMux pattern syntax, path parameters can be read with r.PathValue
+// and the handler is registered for each of the given methods (or for all methods if none given).
+//
+// eg:
+//
+//	foundation.RegisterHTTPHandler("/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+//		id := r.PathValue("id")
+//	}, http.MethodGet)
 func (f *Foundation) RegisterHTTPHandler(path string, fn http.HandlerFunc, methods ...string) {
 	// make sure the HTTP server has been initialized
 	f.initHTTPServerOnce()
-	f.httpRouter.HandleFunc(path, fn).Methods(methods...)
+	h := telemetry.Middleware(f.httpMetrics)(fn)
+	if len(methods) == 0 {
+		f.httpRouter.Handle(path, h)
+		return
+	}
+	for _, m := range methods {
+		f.httpRouter.Handle(m+" "+path, h)
+	}
 }
 
 // RegisterLiveness register a liveness function for /healthz
@@ -263,12 +278,7 @@ func handlerClosure(fn func() (string, error)) http.HandlerFunc {
 
 // Serve configure and start serving request for the foundation service.
 func (f *Foundation) Serve() error {
-	_, err := maxprocs.Set(maxprocs.Logger(func(s string, i ...interface{}) {
-		f.logger.Info(context.Background(), fmt.Sprintf(s, i))
-	}))
-	if err != nil {
-		return errors.Wrap(err, "defining maxprocs")
-	}
+	// GOMAXPROCS is container aware since go 1.25 (cgroup CPU limit), no need to set it.
 
 	// Setup telemetry
 	tracer, err := telemetry.NewTracer(f.name)
@@ -306,8 +316,7 @@ func (f *Foundation) Serve() error {
 
 		// enable grpc metrics
 		// This operation needs to be done after user register the proto to the server.
-		grpcprometheus.EnableHandlingTimeHistogram()
-		grpcprometheus.Register(f.grpcServer)
+		grpckit.InitializeMetrics(f.grpcServer)
 
 		// Create listener for the grpc server
 		listen, err := net.Listen("tcp", f.opts.grpcAddr)
@@ -327,7 +336,8 @@ func (f *Foundation) Serve() error {
 
 		// init the http server
 		if f.gw != nil {
-			f.httpRouter.PathPrefix("/").Handler(f.gw)
+			// the gateway handles all the requests not matching a registered HTTP handler.
+			f.httpRouter.Handle("/", f.gw)
 		}
 		serverError <- f.httpServer.ListenAndServe()
 	}(serverError)
@@ -357,13 +367,27 @@ func (f *Foundation) Serve() error {
 
 // internalHTTP start a new http server for health checks and profiling.
 func internalHTTP(l *log.Logger, readiness http.HandlerFunc, liveliness http.HandlerFunc) {
+	// create http server with options
+	httpServer := http.Server{
+		Addr:        ":9091",
+		Handler:     internalRouter(readiness, liveliness),
+		ReadTimeout: 15 * time.Second,
+	}
 
-	r := mux.NewRouter()
-	r.StrictSlash(true)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil {
+			l.Debug(context.TODO(), "fail to start probe server", log.Error(err))
+		}
+	}()
+}
+
+// internalRouter returns the router for health checks and profiling.
+func internalRouter(readiness http.HandlerFunc, liveliness http.HandlerFunc) *http.ServeMux {
+	r := http.NewServeMux()
 
 	// Init default health checks.
-	r.HandleFunc("/healthz", liveliness).Name("healthz").Methods("GET")
-	r.HandleFunc("/readyz", readiness).Name("readyz").Methods("GET")
+	r.HandleFunc("GET /healthz", liveliness)
+	r.HandleFunc("GET /readyz", readiness)
 
 	// pprof
 	r.HandleFunc("/debug/pprof/", pprof.Index)
@@ -379,16 +403,5 @@ func internalHTTP(l *log.Logger, readiness http.HandlerFunc, liveliness http.Han
 	r.Handle("/debug/pprof/block", pprof.Handler("block"))
 	r.Handle("/debug/pprof/allocs", pprof.Handler("allocs"))
 
-	// create http server with options
-	httpServer := http.Server{
-		Addr:        ":9091",
-		Handler:     r,
-		ReadTimeout: 15 * time.Second,
-	}
-
-	go func() {
-		if err := httpServer.ListenAndServe(); err != nil {
-			l.Debug(context.TODO(), "fail to start probe server", log.Error(err))
-		}
-	}()
+	return r
 }

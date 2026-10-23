@@ -2,7 +2,9 @@ package gcp
 
 import (
 	"context"
+	"fmt"
 	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -51,4 +53,12 @@ func contextFromTracingAttributes(ctx context.Context, m map[string]string) cont
 		return ctx
 	}
 	return trace.ContextWithRemoteSpanContext(ctx, sc)
+}
+
+// resourceName returns the fully qualified name of a pubsub resource (topics or subscriptions).
+func resourceName(project, kind, nameOrID string) string {
+	if strings.HasPrefix(nameOrID, "projects/") {
+		return nameOrID
+	}
+	return fmt.Sprintf("projects/%s/%s/%s", project, kind, nameOrID)
 }

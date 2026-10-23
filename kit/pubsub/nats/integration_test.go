@@ -129,7 +129,7 @@ func (n *natsTestSuite) TestPublishAndSubscribe() {
 	// ctx := context.TODO()
 
 	// Setting up the case
-	n.s.Subscribe(ctx, testDefaultSubject, func(ctx context.Context, msg pubsub.Message) error {
+	n.s.Subscribe(ctx, testDefaultSubject, func(ctx context.Context, msg pubsub.Message, _ map[string]string) error {
 		ch <- fmt.Sprintf("Message received: %v", string(msg))
 		// Somehow checkHeaders - access ctx?
 		return nil
@@ -203,7 +203,7 @@ func (n *natsTestSuite) TestClosedStates() {
 	}
 
 	// Setting up the case
-	s.Subscribe(ctx, testClosingSubject, func(ctx context.Context, msg pubsub.Message) error {
+	s.Subscribe(ctx, testClosingSubject, func(ctx context.Context, msg pubsub.Message, _ map[string]string) error {
 		fmt.Println("Message received")
 		fmt.Println(msg)
 		ch <- fmt.Sprintf("Message received: %v", string(msg))
@@ -212,7 +212,7 @@ func (n *natsTestSuite) TestClosedStates() {
 	err = s.Close()
 	assert.NoError(n.T(), err)
 	err = s.Close()
-	assert.Error(n.T(), pubsub.SubscriberCLosed, err)
+	assert.Error(n.T(), pubsub.ErrSubscriberClosed, err)
 
 	err = p.Publish(ctx, testClosingSubject, []byte("test closed subscriber"))
 	if err != nil {
@@ -226,5 +226,5 @@ func (n *natsTestSuite) TestClosedStates() {
 
 	p.Close()
 	err = p.Publish(ctx, testClosingSubject, []byte("test closed publisher"))
-	assert.Error(n.T(), pubsub.PublisherClosed, err)
+	assert.Error(n.T(), pubsub.ErrPublisherClosed, err)
 }

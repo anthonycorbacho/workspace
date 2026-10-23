@@ -27,6 +27,7 @@ linter:			## Run linter
 
 proto-gen:		## Generate Go code (pb, grpc and grpc-gateway) of the api
 		@cd api && buf generate;
+		@cd kit && buf generate --template '{"version":"v2","plugins":[{"local":["go","tool","protoc-gen-go"],"out":".","opt":"paths=source_relative"}]}' --path pagination/v1/pagination.proto;
 
 test:			## Run unit test (without integration tests)
 		$(GOTEST) -v $(GO_PKGS)

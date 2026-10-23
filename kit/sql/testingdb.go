@@ -58,7 +58,7 @@ func (tdb *TestingDB) Open() error {
 	url.RawQuery = query.Encode()
 
 	now := time.Now().UTC()
-	url.Path = fmt.Sprintf("%s_%s_%s", url.URL.Path, now.Format("150405"), xid.New().String())
+	url.Path = fmt.Sprintf("%s_%s_%s", url.Path, now.Format("150405"), xid.New().String())
 	tdb.DSN = url.URL.String()
 	dbName := strings.TrimPrefix(url.Path, "/")
 

@@ -19,7 +19,7 @@ go::verify() {
   local go_version
   local minimum_go_version
   FS=" " read -ra go_version <<< "$(GOFLAGS='' go version)"
-  minimum_go_version=go1.18.3
+  minimum_go_version=go1.27.0
 
   if [[ "${minimum_go_version}" != $(echo -e "${minimum_go_version}\n${go_version[2]}" | sort -s -t. -k 1,1 -k 2,2n -k 3,3n | head -n1) && "${go_version[2]}" != "devel" ]]; then
     echo -e "Detected go version: ${go_version[*]}."
@@ -30,11 +30,11 @@ go::verify() {
 }
 
 go:install_dependencies() {
-  common::check_installed "protoc-gen-grpc-gateway" "Can't find 'protoc-gen-grpc-gateway', please run 'go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@latest'"
-  common::check_installed "protoc-gen-openapiv2" "Can't find 'protoc-gen-openapiv2', please run 'go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@latest'"
-  common::check_installed "protoc-gen-go" "Can't find 'protoc-gen-go', please run 'go install google.golang.org/protobuf/cmd/protoc-gen-go@latest'"
-  common::check_installed "protoc-gen-go-grpc" "Can't find 'protoc-gen-go-grpc', please run 'go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest'"
-  common::check_installed "protoc-gen-validate" "Can't find 'protoc-gen-validate', please run 'go install github.com/envoyproxy/protoc-gen-validate@latest'"
+  # protoc plugins are pinned in go.mod (tool directive) and run with `go tool`.
+  if ! GOFLAGS='' go tool -n protoc-gen-go > /dev/null 2>&1; then
+    echo -e "Can't resolve the go tools (protoc plugins), please run 'go mod download' and retry."
+    return 2
+  fi
 }
 
 brew::verify() {

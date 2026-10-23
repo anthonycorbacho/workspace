@@ -46,7 +46,7 @@ func NewPublisher(nc *nats.Conn, js nats.JetStreamContext) (*Publisher, error) {
 // Close notifies the Publisher to stop processing messages, send all the remaining messages and close the connection.
 func (p *Publisher) Close() error {
 	if p.nc.IsClosed() {
-		return pubsub.PublisherClosed
+		return pubsub.ErrPublisherClosed
 	}
 	return p.nc.Drain()
 }
@@ -59,9 +59,14 @@ func (p *Publisher) Close() error {
 // To receive messages published to a topic, you must create a subscription to that topic.
 //
 // See https://docs.nats.io/nats-concepts/jetstream/streams to find out more about how NATS streams work.
-func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Message) error {
+func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Message, opts ...pubsub.PublishOption) error {
 	if len(topic) == 0 {
-		return fmt.Errorf("topic is nil")
+		return pubsub.ErrNilTopic
+	}
+
+	options := pubsub.PublishOptions{}
+	for _, o := range opts {
+		o(&options)
 	}
 
 	var span trace.Span
@@ -72,7 +77,7 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 	// if the publisher is in closing state or has been closed
 	// we return an error and annotate the trace with the error.
 	if p.nc.IsClosed() {
-		err := pubsub.PublisherClosed
+		err := pubsub.ErrPublisherClosed
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 
@@ -81,6 +86,9 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 
 	// Prepare headers that will be passed to the pubsub
 	headers := make(map[string][]string)
+	for k, v := range options.Attributes {
+		headers[k] = []string{v}
+	}
 	headers["subject"] = []string{topic}
 	tracingAttributes(span, headers)
 	natsMsg := &nats.Msg{
