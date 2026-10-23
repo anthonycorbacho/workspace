@@ -1,110 +1,127 @@
 # pyroscope
 
-![Version: 0.2.92](https://img.shields.io/badge/Version-0.2.92-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.37.2](https://img.shields.io/badge/AppVersion-0.37.2-informational?style=flat-square)
+![Version: 2.4.1](https://img.shields.io/badge/Version-2.4.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 2.4.1](https://img.shields.io/badge/AppVersion-2.4.1-informational?style=flat-square)
 
-A Helm chart for Pyroscope
+A horizontally scalable, highly available, multi-tenant continuous profiling database.
 
-## Get the Repo of Pyrscope
+**Homepage:** <https://grafana.com/oss/pyroscope/>
 
-```console
+## Source Code
 
-helm repo add pyroscope-io https://pyroscope-io.github.io/helm-chart
+* <https://github.com/grafana/pyroscope>
+* <https://github.com/grafana/pyroscope/tree/main/operations/pyroscope/helm/pyroscope>
 
-```
+## Requirements
 
-## Installing the Chart
-
-To install the chart with the release name `my-release`:
-
-```console
-
-helm install my-release pyroscope-io/pyroscope
-
-```
-
-## Uninstalling the Chart
-
-To uninstall/delete the my-release deployment:
-
-```console
-
-helm delete my-release
-
-```
-
-## Persistence
-
-The official Pyroscope container image runs pyroscope server process with user ID `101`. The chart uses this value as
-default pod security context `fsGroup`. This includes all processes of the container to the supplemental group and makes
-kubelet to change the ownership of mounted volumes to this group (recursively; setgid bit is set).
-
-If you restrict pod security (for example, using `SecurityContextConstraints` or `PodSecurityPolicy`), you may need to
-override `fsGroup` with a value from the valid range.
-
-## Pyroscope configuration
-
-`pyroscopeConfigs` parameter may include any supported pyroscope server configuration option.
-Please refer to [the documentation](https://pyroscope.io/docs/server-configuration) for details.
+| Repository | Name | Version |
+|------------|------|---------|
+| https://charts.min.io/ | minio(minio) | 5.4.0 |
+| https://grafana.github.io/helm-charts | alloy(alloy) | 1.12.1 |
+| https://grafana.github.io/helm-charts | agent(grafana-agent) | 0.44.2 |
 
 ## Values
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| affinity | object | `{}` | Affinity settings for pod assignment |
-| deploymentStrategy | object | `{"type":"Recreate"}` | Deployment strategy |
-| env | object | `{}` | Extra environment variables |
-| extraLabels | object | `{}` | Extra common labels for all resources |
-| extraVolumeMounts | list | `[]` | Additional volume mounts for pyroscope server container |
-| extraVolumes | list | `[]` | Additional volumes |
-| fullnameOverride | string | `""` | Defaults to .Release.Name-.Chart.Name unless .Release.Name contains "pyroscope" |
-| image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |
-| image.repository | string | `"pyroscope/pyroscope"` | image to use for deploying |
-| image.tag | string | `"0.37.2"` | Tag for pyroscope image to use |
-| imagePullSecrets | list | `[]` | Image pull secrets |
-| ingress.annotations | object | `{}` | Ingress annotations (values are templated) |
-| ingress.className | string | `""` | Ingress class name |
-| ingress.enabled | bool | `false` | Enables Ingress |
-| ingress.hosts | list | `[{"host":"chart-example.local","paths":[{"path":"/","pathType":"Prefix"}]}]` | Ingress accepted hostnames |
-| ingress.rules | list | `[]` | Ingress custom rules. Take precedence over chart built-ins. |
-| ingress.tls | list | `[]` | Ingress TLS configuration |
-| initContainers | list | `[]` |  |
-| livenessProbe.enabled | bool | `true` | Enable Pyroscope server liveness |
-| livenessProbe.failureThreshold | int | `3` | Pyroscope server liveness check failure threshold |
-| livenessProbe.httpGet.path | string | `"/healthz"` | Pyroscope server liveness check path |
-| livenessProbe.httpGet.port | int | `4040` | Pyroscope server liveness check port |
-| livenessProbe.initialDelaySeconds | int | `30` | Pyroscope server liveness check intial delay in seconds |
-| livenessProbe.periodSeconds | int | `15` | Pyroscope server liveness check frequency in seconds |
-| livenessProbe.successThreshold | int | `1` | Pyroscope server liveness check success threshold |
-| livenessProbe.timeoutSeconds | int | `30` | Pyroscope server liveness check request timeout |
-| nameOverride | string | `""` | Defaults to .Chart.Name |
-| nodeSelector | object | `{}` | Node labels for pod assignment |
-| persistence.accessModes | list | `["ReadWriteOnce"]` | Persistence access modes |
-| persistence.enabled | bool | `false` | Use persistent volume to store data |
-| persistence.finalizers | list | `["kubernetes.io/pvc-protection"]` | PersistentVolumeClaim finalizers |
-| persistence.size | string | `"10Gi"` | Size of persistent volume claim |
-| podAnnotations | object | `{}` | Pod annotations |
-| podSecurityContext | object | `{"fsGroup":101}` | Pod securityContext |
-| pyroscopeConfigs | object | `{}` | Pyroscope server configuration. Please refer to https://pyroscope.io/docs/server-configuration |
-| rbac.clusterRole.annotations | object | `{}` | Cluster role annotations |
-| rbac.clusterRole.extraRules | list | `[]` | Extra rules for created cluster role |
-| rbac.clusterRole.name | string | `""` | Cluster role name. If not set, the fully qualified app name is used |
-| rbac.clusterRoleBinding.annotations | object | `{}` | Cluster role binding annotations |
-| rbac.clusterRoleBinding.name | string | `""` | Cluster role binding name. If not set, the fully qualified app name is used |
-| rbac.create | bool | `false` | Creates Pyroscope cluster role and binds service account to it; requires service account to be created |
-| readinessProbe.enabled | bool | `true` | Enable Pyroscope server readiness |
-| readinessProbe.failureThreshold | int | `3` | Pyroscope server readiness check failure threshold count |
-| readinessProbe.httpGet.path | string | `"/healthz"` | Pyroscope server readiness check path |
-| readinessProbe.httpGet.port | int | `4040` | Pyroscope server readiness check port |
-| readinessProbe.initialDelaySeconds | int | `30` | Pyroscope server readiness initial delay in seconds |
-| readinessProbe.periodSeconds | int | `5` | Pyroscope server readiness check frequency in seconds |
-| readinessProbe.successThreshold | int | `1` | Pyroscope server readiness check success threshold count |
-| readinessProbe.timeoutSeconds | int | `30` | Pyroscope server readiness check request timeout |
-| resources | object | `{}` | CPU/Memory resource requests/limits |
-| securityContext | object | `{}` | Deployment securityContext |
-| service.annotations | object | `{}` | Service annotations |
-| service.port | int | `4040` | Kubernetes port where service is exposed |
-| service.type | string | `"ClusterIP"` | Specify a service type |
-| serviceAccount.annotations | object | `{}` | ServiceAccount annotations |
-| serviceAccount.create | bool | `true` | Create service account |
-| serviceAccount.name | string | `""` | Service account name to use, when empty will be set to created account if serviceAccount.create is set else to default |
-| tolerations | list | `[]` | Toleration labels for pod assignment |
+| agent | object | `{"agent":{"clustering":{"enabled":true},"configMap":{"create":false,"name":"grafana-agent-config-pyroscope"}},"controller":{"podAnnotations":{"profiles.grafana.com/cpu.port_name":"http-metrics","profiles.grafana.com/cpu.scrape":"true","profiles.grafana.com/goroutine.port_name":"http-metrics","profiles.grafana.com/goroutine.scrape":"true","profiles.grafana.com/memory.port_name":"http-metrics","profiles.grafana.com/memory.scrape":"true"},"replicas":1,"type":"statefulset"},"enabled":false}` | ----------------------------------- |
+| alloy | object | `{"alloy":{"clustering":{"enabled":true},"configMap":{"create":false,"name":"alloy-config-pyroscope"},"stabilityLevel":"public-preview"},"controller":{"podAnnotations":{"profiles.grafana.com/cpu.port_name":"http-metrics","profiles.grafana.com/cpu.scrape":"true","profiles.grafana.com/goroutine.port_name":"http-metrics","profiles.grafana.com/goroutine.scrape":"true","profiles.grafana.com/memory.port_name":"http-metrics","profiles.grafana.com/memory.scrape":"true","profiles.grafana.com/service_git_ref":"v1.19.2","profiles.grafana.com/service_repository":"https://github.com/grafana/alloy"},"replicas":1,"type":"statefulset"},"enabled":true}` | ----------------------------------- |
+| architecture.deployUnifiedServices | bool | `false` | Deploy unified write/read services. These endpoints will can be used no matter if the helm chart is configured as single-binary or microservices |
+| architecture.microservices.clusterLabelSuffix | string | `"-micro-services"` | Memberlist cluster label that will be used for all members of this cluster |
+| architecture.microservices.enabled | bool | `false` | Enable micro-services deployment mode. This is recommend for larger scale deployment and allow right size each aspect of Pyroscope. |
+| architecture.overwriteResources | object | `{}` | This flag is useful for testing, it will overwrite all pods resource statements with its contents |
+| architecture.storage.migration.ingesterWeight | float | `1` | Specifies the fraction [0:1] that should be send to the v1 write path / ingester in combined mode. 0 means no traffics is sent to ingester. 1 means 100% of requests are sent to ingester. |
+| architecture.storage.migration.queryBackendFrom | string | `"auto"` | Specify a time stamp from when the v2 read path should serve traffic. Defaults to "auto" which determines the split point from the metastore. |
+| architecture.storage.migration.segmentWriterWeight | float | `1` | Specifies the fraction [0:1] that should be send to the v2 write path / segment-writer in combined mode. 0 means no traffics is sent to segment-writer. 1 means 100% of requests are sent to segment-writer. |
+| architecture.storage.v1 | bool | `false` | Enable v1 storage layer. |
+| architecture.storage.v2 | bool | `true` | Enable v2 storage layer. |
+| extraObjects | list | `[]` | Array of extra K8s manifests to deploy alongside the chart |
+| global.imageRegistry | string | `nil` | Overrides the Docker registry globally for all images |
+| httpRoute.annotations | object | `{}` | Additional annotations to add to HTTPRoute resource. |
+| httpRoute.enabled | bool | `false` |  |
+| httpRoute.gateway.name | string | `""` |  |
+| httpRoute.gateway.namespace | string | `""` |  |
+| httpRoute.gateway.sectionName | string | `nil` | Optional to specify listener's name. |
+| httpRoute.hostnames | list | `[]` |  |
+| httpRoute.labels | object | `{}` | Additional labels to add to HTTPRoute resource. |
+| httpRoute.timeouts | object | `{}` | Timeout settings to add to each rule in HTTPRoute resource. https://gateway-api.sigs.k8s.io/reference/spec/#httproutetimeouts. |
+| ingress.annotations | object | `{}` |  |
+| ingress.className | string | `""` |  |
+| ingress.enabled | bool | `false` |  |
+| ingress.labels | object | `{}` |  |
+| ingress.pathType | string | `"ImplementationSpecific"` |  |
+| minio | object | `{"buckets":[{"name":"grafana-pyroscope-data","policy":"none","purge":false}],"drivesPerNode":2,"enabled":false,"image":{"repository":"pgsty/silo","tag":"RELEASE.2026-09-16T00-00-00Z"},"mcImage":{"repository":"pgsty/mc","tag":"RELEASE.2026-09-16T00-00-00Z"},"persistence":{"size":"5Gi"},"podAnnotations":{},"replicas":1,"resources":{"requests":{"cpu":"100m","memory":"128Mi"}},"rootPassword":"supersecret","rootUser":"grafana-pyroscope"}` | ----------------------------------- |
+| pyroscope.affinity | object | `{}` |  |
+| pyroscope.cluster_domain | string | `".cluster.local."` | Kubernetes cluster domain suffix for DNS discovery |
+| pyroscope.components | object | `{}` |  |
+| pyroscope.config | string | The config depends on other values been set, details can be found in [`values.yaml`](./values.yaml) | Contains Pyroscope's configuration as a string. |
+| pyroscope.disableSelfProfile | bool | `true` | Enable or disable Self profile push, useful to test |
+| pyroscope.dnsPolicy | string | `"ClusterFirst"` |  |
+| pyroscope.extraArgs | object | `{"log.level":"debug"}` | Additional command-line arguments. Set these under pyroscope.extraArgs, not pyroscope.resources. |
+| pyroscope.extraContainers | list | `[]` |  |
+| pyroscope.extraCustomEnvVars | object | `{}` |  |
+| pyroscope.extraEnvFrom | list | `[]` | Environment variables from secrets or configmaps to add to the pods |
+| pyroscope.extraEnvVars | object | `{}` |  |
+| pyroscope.extraLabels | object | `{}` | Labels added to every pyroscope pod. A component can set its own `extraLabels` under `pyroscope.components.<name>` to add or override labels. |
+| pyroscope.extraVolumeMounts | list | `[]` |  |
+| pyroscope.extraVolumes | list | `[]` |  |
+| pyroscope.fullnameOverride | string | `""` |  |
+| pyroscope.grpc.port | int | `9095` |  |
+| pyroscope.grpc.port_name | string | `"grpc"` |  |
+| pyroscope.image.pullPolicy | string | `"IfNotPresent"` |  |
+| pyroscope.image.registry | string | `""` |  |
+| pyroscope.image.repository | string | `"grafana/pyroscope"` |  |
+| pyroscope.image.tag | string | `""` |  |
+| pyroscope.imagePullSecrets | list | `[]` |  |
+| pyroscope.initContainers | list | `[]` |  |
+| pyroscope.memberlist.port | int | `7946` |  |
+| pyroscope.memberlist.port_name | string | `"memberlist"` |  |
+| pyroscope.metastore.port | int | `9099` |  |
+| pyroscope.metastore.port_name | string | `"raft"` |  |
+| pyroscope.nameOverride | string | `""` |  |
+| pyroscope.nodeSelector | object | `{}` |  |
+| pyroscope.persistence.accessModes[0] | string | `"ReadWriteOnce"` |  |
+| pyroscope.persistence.annotations | object | `{}` |  |
+| pyroscope.persistence.enabled | bool | `false` |  |
+| pyroscope.persistence.metastore.subPath | string | `".metastore"` |  |
+| pyroscope.persistence.size | string | `"10Gi"` |  |
+| pyroscope.podAnnotations."profiles.grafana.com/cpu.port_name" | string | `"http2"` |  |
+| pyroscope.podAnnotations."profiles.grafana.com/cpu.scrape" | string | `"true"` |  |
+| pyroscope.podAnnotations."profiles.grafana.com/goroutine.port_name" | string | `"http2"` |  |
+| pyroscope.podAnnotations."profiles.grafana.com/goroutine.scrape" | string | `"true"` |  |
+| pyroscope.podAnnotations."profiles.grafana.com/memory.port_name" | string | `"http2"` |  |
+| pyroscope.podAnnotations."profiles.grafana.com/memory.scrape" | string | `"true"` |  |
+| pyroscope.podDisruptionBudget.enabled | bool | `true` |  |
+| pyroscope.podDisruptionBudget.maxUnavailable | int | `1` |  |
+| pyroscope.podSecurityContext.fsGroup | int | `10001` |  |
+| pyroscope.podSecurityContext.runAsNonRoot | bool | `true` |  |
+| pyroscope.podSecurityContext.runAsUser | int | `10001` |  |
+| pyroscope.rbac.create | bool | `true` | Whether to create RBAC resources |
+| pyroscope.replicaCount | int | `1` |  |
+| pyroscope.resources | object | `{}` |  |
+| pyroscope.securityContext | object | `{}` |  |
+| pyroscope.service.annotations | object | `{}` |  |
+| pyroscope.service.headlessAnnotations | object | `{}` |  |
+| pyroscope.service.port | int | `4040` |  |
+| pyroscope.service.port_name | string | `"http2"` |  |
+| pyroscope.service.scheme | string | `"HTTP"` |  |
+| pyroscope.service.type | string | `"ClusterIP"` |  |
+| pyroscope.serviceAccount.annotations | object | `{}` |  |
+| pyroscope.serviceAccount.create | bool | `true` |  |
+| pyroscope.serviceAccount.name | string | `""` |  |
+| pyroscope.structuredConfig | object | `{}` | Allows to override Pyroscope's configuration using structured format. |
+| pyroscope.tenantOverrides | object | `{}` | Allows to add tenant specific overrides to the default limit configuration. |
+| pyroscope.tolerations | list | `[]` |  |
+| pyroscope.topologySpreadConstraints | list | `[]` | Topology Spread Constraints |
+| serviceMonitor.annotations | object | `{}` | ServiceMonitor annotations |
+| serviceMonitor.enabled | bool | `false` | If enabled, ServiceMonitor resources for Prometheus Operator are created |
+| serviceMonitor.interval | string | `nil` | ServiceMonitor scrape interval |
+| serviceMonitor.labels | object | `{}` | Additional ServiceMonitor labels |
+| serviceMonitor.matchExpressions | list | `[]` | Optional expressions to match on |
+| serviceMonitor.metricRelabelings | list | `[]` | ServiceMonitor metric relabel configs to apply to samples before ingestion https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api.md#endpoint |
+| serviceMonitor.namespaceSelector | object | `{}` | Namespace selector for ServiceMonitor resources |
+| serviceMonitor.relabelings | list | `[]` | ServiceMonitor relabel configs to apply to samples before scraping https://github.com/prometheus-operator/prometheus-operator/blob/master/Documentation/api.md#relabelconfig |
+| serviceMonitor.scheme | string | `"http"` | ServiceMonitor will use http by default, but you can pick https as well |
+| serviceMonitor.scrapeTimeout | string | `nil` | ServiceMonitor scrape timeout in Go duration format (e.g. 15s) |
+| serviceMonitor.targetLabels | list | `[]` | ServiceMonitor will add labels from the service to the Prometheus metric https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/api.md#servicemonitorspec |
+| serviceMonitor.tlsConfig | string | `nil` | ServiceMonitor will use these tlsConfig settings to make the health check requests |
+

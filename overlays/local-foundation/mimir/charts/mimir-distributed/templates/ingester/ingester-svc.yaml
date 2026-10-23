@@ -1,3 +1,4 @@
+{{- if .Values.ingester.enabled }}
 {{- $args := dict "ctx" . "component" "ingester" "memberlist" true -}}
 {{- $zonesMap := include "mimir.zoneAwareReplicationMap" $args | fromYaml -}}
 {{- range $zoneName, $rolloutZone := $zonesMap }}
@@ -20,7 +21,13 @@ metadata:
     {{- toYaml .Values.ingester.service.annotations | nindent 4 }}
   namespace: {{ .Release.Namespace | quote }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.ingester.service.type }}
+  {{- if semverCompare ">= 1.22-0" (include "mimir.kubeVersion" .) }}
+  internalTrafficPolicy: {{ .Values.ingester.service.internalTrafficPolicy }}
+  {{- end }}
+  {{- if .Values.ingester.service.trafficDistribution }}
+  trafficDistribution: {{ .Values.ingester.service.trafficDistribution }}
+  {{- end }}
   ports:
     - port: {{ include "mimir.serverHttpListenPort" .}}
       protocol: TCP
@@ -30,9 +37,13 @@ spec:
       protocol: TCP
       name: grpc
       targetPort: grpc
+    {{- if .Values.ingester.service.extraPorts }}
+    {{- toYaml .Values.ingester.service.extraPorts | nindent 4 }}
+    {{- end }}
   selector:
     {{- include "mimir.selectorLabels" $args | nindent 4 }}
 
 ---
+{{ end }}
 {{ end }}
 {{ end }}

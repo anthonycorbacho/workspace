@@ -6,7 +6,7 @@ commonAnnotations:
 
 resources:
   - namespace
-  - grafana-agent
+  - alloy
   - loki
   - grafana
   - tempo

@@ -2,8 +2,8 @@ apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
   - helmChart:
-      appVersion: 0.37.2
-      version: 0.2.92
+      appVersion: 2.4.1
+      version: 2.4.1
     path: pyroscope
   path: ./charts
 kind: LockConfig

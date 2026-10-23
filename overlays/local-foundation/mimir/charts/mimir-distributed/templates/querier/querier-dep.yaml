@@ -1,3 +1,4 @@
+{{- if .Values.querier.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,7 +9,15 @@ metadata:
     {{- toYaml .Values.querier.annotations | nindent 4 }}
   namespace: {{ .Release.Namespace | quote }}
 spec:
+  {{- if or (not .Values.querier.kedaAutoscaling.enabled) (.Values.querier.kedaAutoscaling.preserveReplicas) }}
+  # If replicas is not number (when using values file it's float64, when using --set arg it's int64) and is false (i.e. null) don't set it
+  {{- if or (or (kindIs "int64" .Values.querier.replicas) (kindIs "float64" .Values.querier.replicas)) (.Values.querier.replicas) }}
   replicas: {{ .Values.querier.replicas }}
+  {{- end }}
+  {{- end }}
+  {{- with .Values.querier.revisionHistoryLimit }}
+  revisionHistoryLimit: {{ . }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "mimir.selectorLabels" (dict "ctx" . "component" "querier" "memberlist" true) | nindent 6 }}
@@ -27,8 +36,10 @@ spec:
       {{- end }}
       securityContext:
         {{- include "mimir.lib.podSecurityContext" (dict "ctx" . "component" "querier") | nindent 8 }}
+      {{- with .Values.querier.initContainers }}
       initContainers:
-        {{- toYaml .Values.querier.initContainers | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.image.pullSecrets }}
       imagePullSecrets:
       {{- range .Values.image.pullSecrets }}
@@ -37,7 +48,7 @@ spec:
       {{- end }}
       containers:
         - name: querier
-          image: "{{ include "mimir.imageReference" . }}"
+          image: {{ include "mimir.imageReference" (dict "ctx" . "component" "querier") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - "-target=querier"
@@ -54,24 +65,26 @@ spec:
             - "-store-gateway.sharding-ring.zone-awareness-enabled=false"
             {{- end }}
           {{- end }}
+            - "-querier.store-gateway-client.grpc-max-recv-msg-size={{ .Values.store_gateway.grpcMaxQueryResponseSizeBytes }}"
           {{- range $key, $value := .Values.querier.extraArgs }}
-            - "-{{ $key }}={{ $value }}"
+            - -{{ $key }}={{ $value }}
           {{- end }}
           volumeMounts:
             {{- if .Values.querier.extraVolumeMounts }}
               {{ toYaml .Values.querier.extraVolumeMounts | nindent 12}}
             {{- end }}
+            {{- if .Values.global.extraVolumeMounts }}
+              {{ toYaml .Values.global.extraVolumeMounts | nindent 12}}
+            {{- end }}
             - name: config
               mountPath: /etc/mimir
-            {{- if .Values.enterprise.enabled }}
-            - name: license
-              mountPath: /license
-            {{- end }}
             - name: runtime-config
               mountPath: /var/{{ include "mimir.name" . }}
             - name: storage
               mountPath: "/data"
+              {{- if .Values.querier.persistence.subPath }}
               subPath: {{ .Values.querier.persistence.subPath }}
+              {{- end }}
             - name: active-queries
               mountPath: /active-query-tracker
           ports:
@@ -92,46 +105,49 @@ spec:
             {{- toYaml .Values.querier.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.querier.containerSecurityContext | nindent 12 }}
-          env:
-            {{- with .Values.global.extraEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- with .Values.querier.env }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-          envFrom:
-            {{- with .Values.global.extraEnvFrom }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- with .Values.querier.extraEnvFrom }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
+          {{- $defaultEnv := list }}
+          {{- $cpu_request := dig "requests" "cpu" nil .Values.querier.resources }}
+          {{- if $cpu_request }}
+            {{- $cpu_request_doubled := include "mimir.parseCPU" (dict "value" $cpu_request) | float64 | mulf 2 | ceil }}
+            {{- $cpu_request_plus_four := include "mimir.parseCPU" (dict "value" $cpu_request) | float64 | addf 4 | ceil }}
+            {{- $defaultEnv = mustAppend $defaultEnv (dict "name" "GOMAXPROCS" "value" (max $cpu_request_doubled $cpu_request_plus_four | toString)) }}
+          {{- end }}
+          {{- include "mimir.lib.containerEnv" (dict "ctx" . "component" "querier" "env" $defaultEnv) | nindent 10 }}
 {{- if .Values.querier.extraContainers }}
 {{ toYaml .Values.querier.extraContainers | indent 8}}
 {{- end }}
+      {{- with .Values.querier.nodeSelector }}
       nodeSelector:
-        {{- toYaml .Values.querier.nodeSelector | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.querier.affinity}}
       affinity:
-        {{- toYaml .Values.querier.affinity | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- include "mimir.lib.topologySpreadConstraints" (dict "ctx" . "component" "querier") | nindent 6 }}
+      {{- with .Values.querier.tolerations }}
       tolerations:
-        {{- toYaml .Values.querier.tolerations | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ .Values.querier.terminationGracePeriodSeconds }}
+      {{- with .Values.querier.dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       volumes:
         - name: config
           {{- include "mimir.configVolume" . | nindent 10 }}
-        {{- if .Values.enterprise.enabled }}
-        - name: license
-          secret:
-            secretName: {{ tpl .Values.license.secretName . }}
-        {{- end }}
         - name: runtime-config
           configMap:
             name: {{ template "mimir.fullname" . }}-runtime
-{{- if .Values.querier.extraVolumes }}
-{{ toYaml .Values.querier.extraVolumes | indent 8}}
-{{- end }}
+        {{- if .Values.querier.extraVolumes }}
+        {{ toYaml .Values.querier.extraVolumes | nindent 8}}
+        {{- end }}
+        {{- if .Values.global.extraVolumes }}
+        {{ toYaml .Values.global.extraVolumes | nindent 8}}
+        {{- end }}
         - name: storage
           emptyDir: {}
         - name: active-queries
           emptyDir: {}
+{{- end }}

@@ -1,0 +1,88 @@
+# Default values for pyroscope.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+architecture:
+  microservices:
+    enabled: true
+
+pyroscope:
+  components:
+    query-frontend:
+      kind: Deployment
+      replicaCount: 2
+      resources:
+        limits:
+          memory: 1Gi
+        requests:
+          memory: 32Mi
+          cpu: 10m
+    query-backend:
+      kind: Deployment
+      replicaCount: 2
+      resources:
+        limits:
+          memory: 1Gi
+        requests:
+          memory: 32Mi
+          cpu: 10m
+    distributor:
+      kind: Deployment
+      replicaCount: 2
+      resources:
+        limits:
+          memory: 1Gi
+        requests:
+          memory: 32Mi
+          cpu: 50m
+    segment-writer:
+      kind: StatefulSet
+      replicaCount: 3
+      resources:
+        limits:
+          memory: 4Gi
+        requests:
+          memory: 256Mi
+          cpu: 100m
+      initContainers:
+        - name: create-bucket
+          image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export MC_CONFIG_DIR="/tmp/mc"
+              mkdir -p "$MC_CONFIG_DIR"
+              until mc alias set myminio "http://${MINIO_ENDPOINT}:9000" grafana-pyroscope supersecret; do
+                echo "Waiting for Minio to be available..."
+                sleep 5
+              done
+              mc mb myminio/grafana-pyroscope-data --ignore-existing
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MINIO_ENDPOINT
+              value: $(POD_NAMESPACE)-minio
+    metastore:
+      kind: StatefulSet
+      replicaCount: 3
+      resources:
+        limits:
+          memory: 1Gi
+        requests:
+          memory: 64Mi
+          cpu: 10m
+    compaction-worker:
+      kind: StatefulSet
+      replicaCount: 3
+      resources:
+        limits:
+          memory: 1Gi
+        requests:
+          memory: 64Mi
+          cpu: 10m
+
+minio:
+  enabled: true

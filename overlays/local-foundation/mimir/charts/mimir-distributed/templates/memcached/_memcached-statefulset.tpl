@@ -15,13 +15,23 @@ metadata:
   namespace: {{ $.ctx.Release.Namespace | quote }}
 spec:
   podManagementPolicy: {{ .podManagementPolicy }}
+  minReadySeconds: {{ .minReadySeconds }}
   replicas: {{ .replicas }}
+  {{- with .revisionHistoryLimit }}
+  revisionHistoryLimit: {{ . }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "mimir.selectorLabels" (dict "ctx" $.ctx "component" $.component) | nindent 6 }}
   updateStrategy:
     {{- toYaml .statefulStrategy | nindent 4 }}
   serviceName: {{ template "mimir.fullname" $.ctx }}-{{ $.component }}
+  {{- if .volumeClaimTemplates }}
+  volumeClaimTemplates:
+  {{- with .volumeClaimTemplates }}
+      {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
 
   template:
     metadata:
@@ -42,15 +52,23 @@ spec:
       {{- end }}
       securityContext:
         {{- include "mimir.lib.podSecurityContext" (dict "ctx" $.ctx "component" "memcached") | nindent 8 }}
+      {{- with .initContainers }}
       initContainers:
-        {{- toYaml .initContainers | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .nodeSelector }}
       nodeSelector:
-        {{- toYaml .nodeSelector | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .affinity }}
       affinity:
-        {{- toYaml .affinity | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- include "mimir.lib.topologySpreadConstraints" $ | nindent 6 }}
+      {{- with .tolerations }}
       tolerations:
-        {{- toYaml .tolerations | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: {{ .terminationGracePeriodSeconds }}
       {{- if $.ctx.Values.image.pullSecrets }}
       imagePullSecrets:
@@ -58,6 +76,17 @@ spec:
         - name: {{ . }}
       {{- end }}
       {{- end }}
+      {{- with .dnsConfig }}
+      dnsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- with .extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $.ctx.Values.global.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       containers:
         {{- if .extraContainers }}
         {{ toYaml .extraContainers | nindent 8 }}
@@ -84,24 +113,31 @@ spec:
               name: client
           args:
             - -m {{ .allocatedMemory }}
-            - --extended=modern,track_sizes
+            - --extended=modern{{ with .extraExtendedOptions }},{{ . }}{{ end }}
             - -I {{ .maxItemMemory }}m
-            - -c 16384
+            - -c {{ .connectionLimit }}
             - -v
             - -u {{ .port }}
             {{- range $key, $value := .extraArgs }}
             - "-{{ $key }}{{ if $value }} {{ $value }}{{ end }}"
             {{- end }}
+          {{- with $.ctx.Values.global.extraEnv }}
           env:
-            {{- with $.ctx.Values.global.extraEnv }}
               {{ toYaml . | nindent 12 }}
-            {{- end }}
+          {{- end }}
+          {{- with $.ctx.Values.global.extraEnvFrom }}
           envFrom:
-            {{- with $.ctx.Values.global.extraEnvFrom }}
               {{- toYaml . | nindent 12 }}
-            {{- end }}
+          {{- end }}
           securityContext:
             {{- toYaml $.ctx.Values.memcached.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            {{- with .extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $.ctx.Values.global.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
 
       {{- if $.ctx.Values.memcachedExporter.enabled }}
         - name: exporter
@@ -115,10 +151,22 @@ spec:
           args:
             - "--memcached.address=localhost:{{ .port }}"
             - "--web.listen-address=0.0.0.0:9150"
+            {{- range $key, $value := $.ctx.Values.memcachedExporter.extraArgs }}
+            - "--{{ $key }}{{ if $value }}={{ $value }}{{ end }}"
+            {{- end }}
           resources:
             {{- toYaml $.ctx.Values.memcachedExporter.resources | nindent 12 }}
           securityContext:
             {{- toYaml $.ctx.Values.memcachedExporter.containerSecurityContext | nindent 12 }}
+          {{- if or .extraVolumeMounts $.ctx.Values.global.extraVolumeMounts }}
+          volumeMounts:
+            {{- with .extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $.ctx.Values.global.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
       {{- end }}
 {{- end -}}
 {{- end -}}

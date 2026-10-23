@@ -23,9 +23,6 @@ grafana.ini:
   feature_toggles:
     enable: "tempoSearch"
 
-plugins:
-  - pyroscope-datasource
-
 datasources:
   datasources.yaml:
     apiVersion: 1
@@ -69,7 +66,7 @@ datasources:
       basicAuth: false
       isDefault: false
       access: proxy
-      url: http://tempo.monitoring.svc.cluster.local:3100
+      url: http://tempo.monitoring.svc.cluster.local:3200
       jsonData:
         lokiSearch:
           datasourceUid: loki
@@ -96,10 +93,8 @@ datasources:
       editable: true
       orgId: 1
       uid: pyroscope
-      type: pyroscope-datasource
+      type: grafana-pyroscope-datasource
       basicAuth: false
       isDefault: false
       access: proxy
-      url: ''
-      jsonData:
-        path: http://pyroscope.monitoring:4040
+      url: http://pyroscope.monitoring.svc.cluster.local:4040

@@ -1,3 +1,7 @@
+global:
+  # -- Common labels for all object directly managed by this chart.
+  commonLabels: {}
+
 # -- Overrides the chart's name
 nameOverride: ""
 
@@ -16,9 +20,14 @@ podLabels: {}
 # -- Pod security context (runAsUser, etc.)
 podSecurityContext: {}
 
-# -- Toggle to create ClusterRole and ClusterRoleBinding
+# -- Container security context (allowPrivilegeEscalation, etc.)
+containerSecurityContext: {}
+
 rbac:
+  # -- Toggle to create ClusterRole and ClusterRoleBinding
   create: true
+  # -- Name of a PodSecurityPolicy to use in the ClusterRole. If unset, no PodSecurityPolicy is used.
+  podSecurityPolicyName: ''
 
 serviceAccount:
   # -- Toggle to create ServiceAccount
@@ -32,11 +41,26 @@ image:
   # -- Image repo
   repository: grafana/agent-operator
   # -- Image tag
-  tag: v0.25.1
+  tag: v0.44.2
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Image pull secrets
   pullSecrets: []
+
+test:
+  image:
+    # -- Test image registry
+    registry: docker.io
+    # -- Test image repo
+    repository: library/busybox
+    # -- Test image tag
+    tag: latest
+
+# -- hostAliases to add
+hostAliases: []
+#  - ip: 1.2.3.4
+#    hostnames:
+#      - domain.tld
 
 # -- If both are set, Agent Operator will create and maintain a service for scraping kubelets
 # https://grafana.com/docs/agent/latest/operator/getting-started/#monitor-kubelets

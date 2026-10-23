@@ -1,3 +1,4 @@
+{{- if .Values.compactor.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,7 +12,10 @@ metadata:
     {{- toYaml .Values.compactor.service.annotations | nindent 4 }}
   namespace: {{ .Release.Namespace | quote }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.compactor.service.type }}
+  {{- if semverCompare ">= 1.22-0" (include "mimir.kubeVersion" .) }}
+  internalTrafficPolicy: {{ .Values.compactor.service.internalTrafficPolicy }}
+  {{- end }}
   ports:
     - port: {{ include "mimir.serverHttpListenPort" .}}
       protocol: TCP
@@ -21,5 +25,9 @@ spec:
       protocol: TCP
       name: grpc
       targetPort: grpc
+    {{- if .Values.compactor.service.extraPorts }}
+    {{- toYaml .Values.compactor.service.extraPorts | nindent 4 }}
+    {{- end }}
   selector:
     {{- include "mimir.selectorLabels" (dict "ctx" . "component" "compactor" "memberlist" true) | nindent 4 }}
+{{- end }}

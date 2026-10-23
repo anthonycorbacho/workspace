@@ -6,5 +6,6 @@ directories:
       - path: loki
         helmChart:
           name: loki
+          version: "7.5.0"
           repository:
             url: https://grafana.github.io/helm-charts

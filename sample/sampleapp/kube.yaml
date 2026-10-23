@@ -52,7 +52,7 @@ spec:
           name: sampleapp
           env:
             - name: OTL_ENDPOINT
-              value: grafana-agent.monitoring.svc.cluster.local:4317
+              value: alloy.monitoring.svc.cluster.local:4317
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -106,4 +106,4 @@ spec:
   minAvailable: 1
   selector:
     matchLabels:
-      name: sampleapp
+      app: sampleapp

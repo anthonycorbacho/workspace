@@ -76,9 +76,8 @@ You can run `make onboarding` to see if you have required tools missing.
 - [Rancher-desktop](https://docs.rancherdesktop.io/getting-started/installation/) or [Docker-desktop](https://www.docker.com/products/docker-desktop/)
 - [Go](https://go.dev/dl/) `brew install go`
 - [ko](https://github.com/google/ko) `brew install ko`
-- [Kustomize](https://kubectl.docs.kubernetes.io/installation/kustomize/) `brew install kustomize`
 - [helm](https://helm.sh/docs/intro/install/) `brew install helm`
-- [vendir](https://carvel.dev/vendir/docs/v0.32.0/install/) `brew tap vmware-tanzu/carvel; brew install vendir`
+- [vendir](https://carvel.dev/vendir/docs/latest/install/) `brew tap carvel-dev/carvel; brew install vendir` (only to update the vendored helm charts)
 - [Tilt](https://tilt.dev/) `brew install tilt`
 - [Buf](https://buf.build/docs/installation) `brew install buf`, the protoc plugins are pinned in `go.mod` (`tool` directive) and run with `go tool`, no install needed.
 - [golangci-lint](https://github.com/golangci/golangci-lint) `brew install golangci-lint`

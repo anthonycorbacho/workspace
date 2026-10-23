@@ -26,3 +26,5 @@ _test
 
 ## Secrets
 *secret.yaml
+# vendored helm charts contain secret templates, not secrets.
+!overlays/local-foundation/*/charts/**

@@ -1,39 +1,59 @@
-Pyroscope is an open source continuous profiling platform. It will help you:
 
-- Find performance issues in your code
-- Resolve issues with high CPU utilization
-- Understand the call tree of your application
-- Track changes over time
+Thanks for deploying Grafana Pyroscope.
 
-Document Link:
-https://pyroscope.io/docs/
+# Pyroscope UI & Grafana
 
-Get the application URL by running these commands:
-{{- if .Values.ingress.enabled }}
-{{- range $host := .Values.ingress.hosts }}
-  {{- range .paths }}
-  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
-  {{- end }}
+Pyroscope database comes with a built-in UI, to access it from your localhost you can use:
+
+```
+{{ include "pyroscope.kubectl_port_forward_read" . }}
+```
+
+You can also use Grafana to explore Pyroscope data.
+For that, you'll need to add the Pyroscope data source to your Grafana instance and configure the query URL accordingly.
+See https://grafana.com/docs/grafana/latest/datasources/grafana-pyroscope/ for more details.
+
+The in-cluster query URL for the data source in Grafana is:
+
+```
+{{ include "pyroscope.read_url" . }}
+```
+
+# Collecting profiles.
+
+{{ if or .Values.agent.enabled .Values.alloy.enabled }}
+The Grafana {{ if .Values.alloy.enabled }}Alloy{{ else }}Agent{{ end }} has been installed to scrape and discover pprof profiles endpoint via pod annotations.
+
+As an example, to start collecting memory and cpu profile using the 8080 port, add the following annotations to your workload:
+
+```
+profiles.grafana.com/memory.scrape: "true"
+profiles.grafana.com/memory.port: "8080"
+profiles.grafana.com/cpu.scrape: "true"
+profiles.grafana.com/cpu.port: "8080"
+```
+
+
+To learn more supported annotations, read our guide https://grafana.com/docs/pyroscope/latest/deploy-kubernetes/#optional-scrape-your-own-workloads-profiles
 {{- end }}
-{{- else if contains "NodePort" .Values.service.type }}
-  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "pyroscope.fullname" . }})
-  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
-  echo http://$NODE_IP:$NODE_PORT
-{{- else if contains "LoadBalancer" .Values.service.type }}
-     NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "pyroscope.fullname" . }}'
-  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "pyroscope.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo http://$SERVICE_IP:{{ .Values.service.port }}
-{{- else if contains "ClusterIP" .Values.service.type }}
-  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "pyroscope.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
-  export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
-  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8080:$CONTAINER_PORT
-  echo "Visit http://127.0.0.1:8080 to use your application"
+
+There are various ways to collect profiles from your application depending on your needs.
+Follow our guide to setup profiling data collection for your workload:
+
+https://grafana.com/docs/pyroscope/latest/configure-client/
+
+{{- $storage := .Values.architecture.storage }}
+{{- if and $storage.v1 $storage.v2 }}
+
+# Pyroscope v2 Migration is active
+
+Write traffic will be written to:
+- {{ mul $storage.migration.ingesterWeight 100 }}% v1: ingester
+- {{ mul $storage.migration.segmentWriterWeight 100 }}% v2: segment-writer
+
+Read traffic is served from v2 read path from {{if eq $storage.migration.queryBackendFrom "auto"}}as soon as data was first ingested to v2{{else}}{{$storage.migration.queryBackendFrom}}{{end}}.
 {{- end }}
 
-{{ if not .Values.persistence.enabled }}
-#################################################################################
-######   WARNING: Persistence is disabled!!! You will lose your data when   #####
-######            the Pyroscope pod is terminated.                          #####
-#################################################################################
+{{- if and (not $storage.v1) (not $storage.v2) }}
+{{- fail "you need to set at least one of .Values.architecture.storage.v1, .Values.architecture.storage.v2 to true" }}
 {{- end }}

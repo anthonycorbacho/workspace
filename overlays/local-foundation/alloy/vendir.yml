@@ -1,0 +1,11 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: ./charts # default location in Helm world
+    contents:
+      - path: alloy
+        helmChart:
+          name: alloy
+          version: "1.14.3"
+          repository:
+            url: https://grafana.github.io/helm-charts

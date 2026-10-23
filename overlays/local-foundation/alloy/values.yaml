@@ -1,0 +1,190 @@
+# Grafana Alloy collects the logs (to Loki), the OTLP traces (to Tempo)
+# and the profiles (to Pyroscope) of the local cluster.
+alloy:
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+  configMap:
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // Only keep the pods running on the same node as this Alloy instance (daemonset).
+      discovery.relabel "node_pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          regex         = sys.env("HOSTNAME")
+          action        = "keep"
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // Logs: pods logs are sent to Loki.
+      // ---------------------------------------------------------------------
+      discovery.relabel "pod_logs" {
+        targets = discovery.relabel.node_pods.output
+
+        rule {
+          regex  = "__meta_kubernetes_pod_label_(.+)"
+          action = "labelmap"
+        }
+        // Identify a service name to form the job label, the first label found is used.
+        rule {
+          source_labels = [
+            "__meta_kubernetes_pod_label_k8s_app",
+            "__meta_kubernetes_pod_label_app",
+            "__meta_kubernetes_pod_label_name",
+            "__meta_kubernetes_pod_controller_name",
+            "__meta_kubernetes_pod_name",
+          ]
+          target_label = "__service__"
+          regex        = ";*([^;]+);*.*"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace", "__service__"]
+          target_label  = "job"
+          separator     = "/"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          target_label = "cluster"
+          replacement  = "k8s-cluster"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+        endpoint {
+          url = "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // Traces: OTLP traces are sent to Tempo.
+      // ---------------------------------------------------------------------
+      otelcol.receiver.otlp "default" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          traces = [otelcol.processor.batch.default.input]
+        }
+      }
+
+      otelcol.processor.batch "default" {
+        output {
+          traces = [otelcol.exporter.otlp.tempo.input]
+        }
+      }
+
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "tempo.monitoring.svc.cluster.local:4317"
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+      // ---------------------------------------------------------------------
+      // Profiles: pods annotated with pyroscope.io/scrape are profiled (pprof endpoints)
+      // and the profiles are sent to Pyroscope.
+      //
+      //   pyroscope.io/scrape: "true"
+      //   pyroscope.io/application-name: <service name>
+      //   pyroscope.io/port: <port exposing /debug/pprof>
+      // ---------------------------------------------------------------------
+      discovery.relabel "pod_profiles" {
+        targets = discovery.relabel.node_pods.output
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_pyroscope_io_scrape"]
+          regex         = "true"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_phase"]
+          regex         = "Pending|Succeeded|Failed|Completed"
+          action        = "drop"
+        }
+        rule {
+          source_labels = ["__address__", "__meta_kubernetes_pod_annotation_pyroscope_io_port"]
+          regex         = "([^:]+)(?::\\d+)?;(\\d+)"
+          replacement   = "$1:$2"
+          target_label  = "__address__"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_pyroscope_io_application_name"]
+          target_label  = "service_name"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+      }
+
+      pyroscope.scrape "pods" {
+        targets    = discovery.relabel.pod_profiles.output
+        forward_to = [pyroscope.write.default.receiver]
+
+        profiling_config {
+          profile.process_cpu {
+            enabled = true
+          }
+          profile.memory {
+            enabled = true
+          }
+          profile.goroutine {
+            enabled = true
+          }
+          profile.mutex {
+            enabled = true
+          }
+          profile.block {
+            enabled = true
+          }
+        }
+      }
+
+      pyroscope.write "default" {
+        endpoint {
+          url = "http://pyroscope.monitoring.svc.cluster.local:4040"
+        }
+      }

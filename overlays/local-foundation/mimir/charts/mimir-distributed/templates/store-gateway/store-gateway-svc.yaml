@@ -1,3 +1,4 @@
+{{- if .Values.store_gateway.enabled }}
 {{- $args := dict "ctx" $ "component" "store-gateway" "memberlist" true -}}
 {{- $zonesMap := include "mimir.zoneAwareReplicationMap" $args | fromYaml -}}
 {{- range $zoneName, $rolloutZone := $zonesMap }}
@@ -20,7 +21,13 @@ metadata:
     {{- toYaml .Values.store_gateway.service.annotations | nindent 4 }}
   namespace: {{ .Release.Namespace | quote }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.store_gateway.service.type }}
+  {{- if semverCompare ">= 1.22-0" (include "mimir.kubeVersion" .) }}
+  internalTrafficPolicy: {{ .Values.store_gateway.service.internalTrafficPolicy }}
+  {{- end }}
+  {{- if .Values.store_gateway.service.trafficDistribution }}
+  trafficDistribution: {{ .Values.store_gateway.service.trafficDistribution }}
+  {{- end }}
   ports:
     - port: {{ include "mimir.serverHttpListenPort" . }}
       protocol: TCP
@@ -30,9 +37,13 @@ spec:
       protocol: TCP
       name: grpc
       targetPort: grpc
+    {{- if .Values.store_gateway.service.extraPorts }}
+    {{- toYaml .Values.store_gateway.service.extraPorts | nindent 4 }}
+    {{- end }}
   selector:
     {{- include "mimir.selectorLabels" $args | nindent 4 }}
 
 ---
+{{ end }}
 {{ end }}
 {{ end }}

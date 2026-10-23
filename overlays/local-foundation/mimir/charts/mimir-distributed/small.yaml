@@ -1,5 +1,6 @@
 # These values configure the Grafana Mimir or Grafana Enterprise Metrics cluster
-# for a more production-ready setup. The setup targets 70% CPU and memory utilization
+# for higher scale than the default values, but not for high-availability production use.
+# The setup targets 70% CPU and memory utilization
 # so that the cluster has room to grow. The resource requests reflect 70% utilization
 # and the limits reflect 100% utilization. The values do not set CPU limits,
 # because CPU limits have caused severe issues elsewhere, so we don't apply any in our helm chart:
@@ -71,30 +72,18 @@ ingester:
       requiredDuringSchedulingIgnoredDuringExecution:
         - labelSelector:
             matchExpressions:
-              - key: target # support for enterprise.legacyLabels
-                operator: In
-                values:
-                  - ingester
-          topologyKey: 'kubernetes.io/hostname'
-
-        - labelSelector:
-            matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
                 values:
                   - ingester
-          topologyKey: 'kubernetes.io/hostname'
+          topologyKey: "kubernetes.io/hostname"
 
   zoneAwareReplication:
-    topologyKey: 'kubernetes.io/hostname'
-
-admin-cache:
-  enabled: true
-  replicas: 2
+    topologyKey: "kubernetes.io/hostname"
 
 chunks-cache:
   enabled: true
-  replicas: 2
+  replicas: 3
 
 index-cache:
   enabled: true
@@ -102,10 +91,11 @@ index-cache:
 
 metadata-cache:
   enabled: true
+  replicas: 3
 
 results-cache:
   enabled: true
-  replicas: 2
+  replicas: 3
 
 minio:
   enabled: false
@@ -132,7 +122,7 @@ query_frontend:
   replicas: 1
   resources:
     limits:
-      memory: 2.8Gi
+      memory: 4Gi
     requests:
       cpu: 2
       memory: 2Gi
@@ -162,40 +152,13 @@ store_gateway:
       requiredDuringSchedulingIgnoredDuringExecution:
         - labelSelector:
             matchExpressions:
-              - key: target # support for enterprise.legacyLabels
-                operator: In
-                values:
-                  - store-gateway
-          topologyKey: 'kubernetes.io/hostname'
-
-        - labelSelector:
-            matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
                 values:
                   - store-gateway
-          topologyKey: 'kubernetes.io/hostname'
+          topologyKey: "kubernetes.io/hostname"
   zoneAwareReplication:
-    topologyKey: 'kubernetes.io/hostname'
-
-nginx:
-  replicas: 1
-  resources:
-    limits:
-      memory: 731Mi
-    requests:
-      cpu: 1
-      memory: 512Mi
-
-# Grafana Enterprise Metrics feature related
-admin_api:
-  replicas: 1
-  resources:
-    limits:
-      memory: 128Mi
-    requests:
-      cpu: 100m
-      memory: 64Mi
+    topologyKey: "kubernetes.io/hostname"
 
 gateway:
   replicas: 1

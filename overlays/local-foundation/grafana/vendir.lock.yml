@@ -3,7 +3,7 @@ directories:
 - contents:
   - helmChart:
       appVersion: 12.3.1
-      version: 10.5.13
+      version: 10.5.15
     path: grafana
-  path: charts
+  path: ./charts
 kind: LockConfig

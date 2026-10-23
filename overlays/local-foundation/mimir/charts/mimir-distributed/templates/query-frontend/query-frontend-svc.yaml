@@ -1,3 +1,4 @@
+{{- if .Values.query_frontend.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,7 +12,13 @@ metadata:
     {{- toYaml .Values.query_frontend.service.annotations | nindent 4 }}
   namespace: {{ .Release.Namespace | quote }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.query_frontend.service.type }}
+  {{- if semverCompare ">= 1.22-0" (include "mimir.kubeVersion" .) }}
+  internalTrafficPolicy: {{ .Values.query_frontend.service.internalTrafficPolicy }}
+  {{- end }}
+  {{- if .Values.query_frontend.service.trafficDistribution }}
+  trafficDistribution: {{ .Values.query_frontend.service.trafficDistribution }}
+  {{- end }}
   ports:
     - port: {{ include "mimir.serverHttpListenPort" .}}
       protocol: TCP
@@ -21,5 +28,9 @@ spec:
       protocol: TCP
       name: grpc
       targetPort: grpc
+    {{- if .Values.query_frontend.service.extraPorts }}
+    {{- toYaml .Values.query_frontend.service.extraPorts | nindent 4 }}
+    {{- end }}
   selector:
     {{- include "mimir.selectorLabels" (dict "ctx" . "component" "query-frontend") | nindent 4 }}
+{{- end }}

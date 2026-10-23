@@ -12,7 +12,13 @@ metadata:
   annotations:
     {{- toYaml .Values.query_scheduler.service.annotations | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.query_scheduler.service.type }}
+  {{- if semverCompare ">= 1.22-0" (include "mimir.kubeVersion" .) }}
+  internalTrafficPolicy: {{ .Values.query_scheduler.service.internalTrafficPolicy }}
+  {{- end }}
+  {{- if .Values.query_scheduler.service.trafficDistribution }}
+  trafficDistribution: {{ .Values.query_scheduler.service.trafficDistribution }}
+  {{- end }}
   ports:
     - port: {{ include "mimir.serverHttpListenPort" .}}
       protocol: TCP
@@ -22,6 +28,9 @@ spec:
       protocol: TCP
       name: grpc
       targetPort: grpc
+    {{- if .Values.query_scheduler.service.extraPorts }}
+    {{- toYaml .Values.query_scheduler.service.extraPorts | nindent 4 }}
+    {{- end }}
   selector:
     {{- include "mimir.selectorLabels" (dict "ctx" . "component" "query-scheduler") | nindent 4 }}
 {{- end }}

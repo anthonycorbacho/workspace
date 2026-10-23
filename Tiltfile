@@ -12,8 +12,10 @@ allow_k8s_contexts([
 # Overriding the default kustomize function to allow
 # passing enable helm options.
 # Default builtin kustomize do not allow passing options.
+# kubectl embeds kustomize, so no extra binary is required (helm is still needed for the charts).
 def kustomize(path):
-    cmd = "kustomize build --enable-helm " + path
+    watch_file(path)
+    cmd = "kubectl kustomize --enable-helm " + path
     return local(cmd, command_bat=cmd, quiet=True)
 
 # Load local foundation dependencies.
@@ -23,7 +25,7 @@ k8s_yaml(kustomize('overlays/local-foundation'))
 k8s_resource('loki', labels=["monitoring"])
 k8s_resource('loki-gateway', labels=["monitoring"])
 k8s_resource('grafana', port_forwards='8090:3000', labels=["monitoring"])
-k8s_resource('grafana-agent', port_forwards='8091:80', labels=["monitoring"])
+k8s_resource('alloy', port_forwards='8091:12345', labels=["monitoring"])
 k8s_resource('prometheus', labels=["monitoring"])
 k8s_resource('tempo', labels=["monitoring"])
 

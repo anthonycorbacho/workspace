@@ -1,64 +1,118 @@
-{{- if .Values.ingress.enabled -}}
-{{- $fullName := include "pyroscope.fullname" . -}}
-{{- $svcPort := .Values.service.port -}}
-{{- if and .Values.ingress.className (not (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion)) }}
-  {{- if not (hasKey .Values.ingress.annotations "kubernetes.io/ingress.class") }}
-  {{- $_ := set .Values.ingress.annotations "kubernetes.io/ingress.class" .Values.ingress.className}}
-  {{- end }}
-{{- end }}
-{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion -}}
+{{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
-{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion -}}
-apiVersion: networking.k8s.io/v1beta1
-{{- else -}}
-apiVersion: extensions/v1beta1
-{{- end }}
 kind: Ingress
 metadata:
-  name: {{ $fullName }}
+  name: {{ include "pyroscope.fullname" . }}-ingress
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "pyroscope.labels" . | nindent 4 }}
+    {{- with .Values.ingress.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if and .Values.ingress.className (semverCompare ">=1.18-0" .Capabilities.KubeVersion.GitVersion) }}
-  ingressClassName: {{ .Values.ingress.className }}
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
   {{- end }}
-  {{- if .Values.ingress.tls }}
+  {{- with .Values.ingress.tls }}
   tls:
-    {{- range .Values.ingress.tls }}
-    - hosts:
-        {{- range .hosts }}
-        - {{ . | quote }}
-        {{- end }}
-      secretName: {{ .secretName }}
-    {{- end }}
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   rules:
-    {{- with .Values.ingress.rules }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-    {{- range .Values.ingress.hosts }}
-    - host: {{ .host | quote }}
-      http:
-        paths:
-          {{- range .paths }}
-          - path: {{ .path }}
-            {{- if semverCompare ">=1.18-0" $.Capabilities.KubeVersion.GitVersion }}
-            pathType: {{ .pathType | default "ImplementationSpecific" }}
+  {{- range $.Values.ingress.hosts }}
+  - host: {{ . | quote }}
+    http:
+      paths:
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-query-frontend
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
             {{- end }}
-            backend:
-              {{- if semverCompare ">=1.19-0" $.Capabilities.KubeVersion.GitVersion }}
-              service:
-                name: {{ $fullName }}
-                port:
-                  number: {{ $svcPort }}
-              {{- else }}
-              serviceName: {{ $fullName }}
-              servicePort: {{ $svcPort }}
-              {{- end }}
-          {{- end }}
-    {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-query-frontend
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /querier.v1.QuerierService/
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-query-frontend
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /render
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-query-frontend
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /render-diff
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-distributor
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /push.v1.PusherService/
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-distributor
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /ingest
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-tenant-settings
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /settings.v1.SettingsService/
+        pathType: {{ $.Values.ingress.pathType }}
+      - backend:
+          service:
+            {{- if gt (len $.Values.pyroscope.components) 1}}
+            name: {{ include "pyroscope.fullname" $ }}-ad-hoc-profiles
+            {{- else }}
+            name: {{ include "pyroscope.fullname" $ }}
+            {{- end }}
+            port:
+              number: {{ $.Values.pyroscope.service.port }}
+        path: /adhocprofiles.v1.AdHocProfileService/
+        pathType: {{ $.Values.ingress.pathType }}
   {{- end }}
+{{- end }}

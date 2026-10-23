@@ -1,0 +1,93 @@
+{{- $global := . }}
+{{- $components := (fromYaml (include "pyroscope.components" .)) }}
+{{- $hasV2 := $global.Values.architecture.storage.v2 }}
+{{- range $component, $cfg := $components }}
+{{- with $global }}
+{{-  $values := mustMergeOverwrite (deepCopy .Values.pyroscope ) ($cfg | default dict)}}
+{{-  $isMetastore := or (and (eq $component "all") ($hasV2)) (eq $component "metastore") }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $cfg.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pyroscope.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | quote }}
+  {{- if $values.service.annotations }}
+  annotations:
+    {{- toYaml $values.service.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $values.service.type }}
+  ports:
+    - port: {{ $values.service.port }}
+      targetPort: {{ $values.service.port_name }}
+      protocol: TCP
+      name: {{ $values.service.port_name }}
+    {{- if $hasV2 }}
+    - port: {{ $values.grpc.port }}
+      targetPort: {{ $values.grpc.port_name }}
+      protocol: TCP
+      name: {{ $values.grpc.port_name }}
+    {{- end }}
+    {{- if $isMetastore }}
+    - port: {{ $values.metastore.port }}
+      targetPort: {{ $values.metastore.port_name }}
+      protocol: TCP
+      name: {{ $values.metastore.port_name }}
+    {{- end }}
+    {{- with $values.service.extraPorts }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  selector:
+    {{- include "pyroscope.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $cfg.name }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pyroscope.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | quote }}
+    {{- if .Values.serviceMonitor.enabled }}
+    {{- /* A label, not an annotation: the ServiceMonitor selector only matches labels. */}}
+    prometheus.io/service-monitor: "false"
+    {{- end }}
+  {{- with $values.service.headlessAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ $values.service.port }}
+      targetPort: {{ $values.service.port_name }}
+      protocol: TCP
+      name: {{ $values.service.port_name }}
+    {{- if $hasV2 }}
+    - port: {{ $values.grpc.port }}
+      targetPort: {{ $values.grpc.port_name }}
+      protocol: TCP
+      name: {{ $values.grpc.port_name }}
+    {{- end }}
+    {{- if $isMetastore }}
+    - port: {{ $values.metastore.port }}
+      targetPort: {{ $values.metastore.port_name }}
+      protocol: TCP
+      name: {{ $values.metastore.port_name }}
+    {{- end }}
+    {{- with $values.service.extraPorts }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or $values.service.publishNotReadyAddresses $isMetastore }}
+  publishNotReadyAddresses: true
+  {{- end }}
+  selector:
+    {{- include "pyroscope.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | quote }}
+{{- end }}
+{{- end }}
