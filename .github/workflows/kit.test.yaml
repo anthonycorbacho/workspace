@@ -1,9 +1,27 @@
-name: Kit framework Unit test
+name: Kit framework test
 on:
-  pull_request:
-    types: [ opened, synchronize ]
+  push:
+    branches: [main]
     paths:
-      - "kit/**/*.go"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/kit.test.yaml"
+  pull_request:
+    paths:
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/kit.test.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   TESTINGDB_URL: postgresql://postgres:secret@localhost:5432/postgres
@@ -17,6 +35,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - name: Install Go
@@ -24,9 +43,12 @@ jobs:
         with:
           go-version-file: 'go.mod'
       - name: Start up docker compose
-        run: docker compose -f kit/docker-compose.yaml up -d --remove-orphans
+        run: docker compose -f kit/docker-compose.yaml up -d --wait --remove-orphans
       - name: Run Kit Test
-        run: go test -v -race -p=6 -cpu=1,4 ./kit/...
+        run: go test -race -p=6 -cpu=1,4 ./kit/...
+      - name: Dump containers logs
+        if: failure()
+        run: docker compose -f kit/docker-compose.yaml logs --tail=200
       - name: Stop containers
         if: always()
         run: docker compose -f kit/docker-compose.yaml down

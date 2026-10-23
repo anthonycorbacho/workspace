@@ -4,12 +4,27 @@ on:
   push:
     branches: [main]
     paths:
-      - "sample/sampleapp/**/*.go"
-      - "kit/**/*.go"
+      - "sample/sampleapp/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".ko.yaml"
+      - ".github/workflows/sample.sampleapp.build.yaml"
+      - ".github/workflows/ko-builder.yaml"
+
+permissions:
+  contents: read
+
 jobs:
   # Build the image of the service and push it
   build-and-push:
-    uses: anthonycorbacho/workspace/.github/workflows/ko-builder.yaml@main
+    # local reusable workflow, so the builder is the one of the same commit.
+    uses: ./.github/workflows/ko-builder.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     with:
       service: sampleapp
       namespace: sample

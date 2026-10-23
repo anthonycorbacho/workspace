@@ -1,13 +1,34 @@
 name: Sample/Sampleapp Unit test
 on:
-  pull_request:
-    types: [ opened, synchronize ]
+  push:
+    branches: [main]
     paths:
-      - "sample/sampleapp/**/*.go"
-      - "kit/**/*.go"
+      - "sample/sampleapp/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/sample.sampleapp.test.yaml"
+  pull_request:
+    paths:
+      - "sample/sampleapp/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/sample.sampleapp.test.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Install Go
@@ -15,4 +36,4 @@ jobs:
         with:
           go-version-file: 'go.mod'
       - name: Run Test
-        run: go test -v -race -p=6 -cpu=1,4 ./sample/sampleapp/...
+        run: go test -race -p=6 -cpu=1,4 ./sample/sampleapp/...

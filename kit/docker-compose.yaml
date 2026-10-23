@@ -1,4 +1,5 @@
-# Docker-compose for unit test of Kit framework
+# Docker-compose for unit test of Kit framework.
+# `docker compose up -d --wait` returns once the services with a healthcheck are healthy.
 
 services:
 
@@ -7,16 +8,25 @@ services:
     image: redis
     ports:
       - '6379:6379'
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
 
   postgres:
     image: postgres:14.4
     ports:
-      - '5432:5432'
+      # the host port can be changed when 5432 is already used locally.
+      - '${POSTGRES_PORT:-5432}:5432'
     command: ["postgres", "-c", "log_statement=all"]
     environment:
       - POSTGRES_PASSWORD=secret
-      - POSTGRES_DB=postgress
+      - POSTGRES_DB=postgres
       - POSTGRES_USER=postgres
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
 
   nats:
     image: nats
@@ -29,6 +39,10 @@ services:
     command: [ "gcloud", "beta", "emulators", "pubsub", "start", "--host-port=0.0.0.0:8085", "--project=fake" ]
     ports:
       - "8085:8085"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8085"]
+      interval: 2s
+      retries: 60
 
   # Kafka compatible broker
   redpanda:
@@ -42,6 +56,10 @@ services:
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
       - '19092:19092'
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 2s
+      retries: 60
 
   mosquitto:
     image: eclipse-mosquitto:2

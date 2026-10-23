@@ -65,6 +65,3 @@ formatters:
     - goimports
   exclusions:
     generated: lax
-
-issues:
-  new: true

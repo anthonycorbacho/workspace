@@ -40,4 +40,5 @@ jobs:
           BINARY: ${{ inputs.service }}
         run: |
           SBOM=cyclonedx
-          ko build --bare --sbom=$SBOM --image-refs=ko.images ./${{ inputs.namespace }}/${{ inputs.service }}/cmd/${{ inputs.service }}
+          # the commit sha tag is immutable, it allows to deploy or rollback to a given commit.
+          ko build --bare --sbom=$SBOM --tags=latest,${{ github.sha }} --image-refs=ko.images ./${{ inputs.namespace }}/${{ inputs.service }}/cmd/${{ inputs.service }}

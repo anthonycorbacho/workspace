@@ -9,3 +9,6 @@ directories:
           version: "1.14.3"
           repository:
             url: https://grafana.github.io/helm-charts
+        # the chart go unit tests would be part of the workspace go module.
+        excludePaths:
+          - "**/*.go"

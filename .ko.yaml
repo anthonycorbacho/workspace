@@ -1,4 +1,6 @@
-defaultBaseImage: cgr.dev/chainguard/static@sha256:69c1e79431374847fbc21d74dc632e717040a1a7d795f7128ca73e7b8c028eae
+# Pinned for reproducible builds, update the digest regularly to get the base image security fixes:
+#   docker buildx imagetools inspect cgr.dev/chainguard/static:latest
+defaultBaseImage: cgr.dev/chainguard/static@sha256:17367e4d3ae2b46c3290858e483fac09be085c92b372360fe3bf6a6150848fde
 
 defaultPlatforms:
   - linux/arm64
