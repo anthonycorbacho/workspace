@@ -1,0 +1,64 @@
+# Error catalog of the workspace, the error constructors are generated in error.gen.go
+# and the documentation in docs/ by running `make errgen`.
+#
+# - code: unique, formatted as ERR_<5 digits>, in the block reserved for the domain (see below).
+#   A released code is part of the API: it must never change nor be reused by another error.
+# - kind: category of the error (eg: NOT_FOUND, see kit/errors.Kind), mapped to a gRPC code and an
+#   HTTP status by the transports.
+# - message: client facing message, {var} placeholders are replaced by the vars values.
+# - vars: constructor arguments (string, bool, int, int32, int64, uint, uint32, uint64, float32, float64),
+#   sent to the client in the error details unless `internal: true` (only in logs).
+docs:
+  product: Workspace
+  support_email: support@example.com
+
+# Reserved code blocks per domain:
+#   - 00XXX: kit, generic errors used by the kit.
+#   - 01XXX: sample, errors of the sample application.
+errors:
+  # Kit: 00XXX
+  - name: Internal
+    code: ERR_00000
+    kind: INTERNAL
+    common: true
+    message: "internal error"
+
+  - name: InvalidRequest
+    code: ERR_00001
+    kind: INVALID_ARGUMENT
+    common: true
+    message: "invalid request"
+
+  - name: Unclassified
+    code: ERR_00002
+    kind: UNKNOWN
+    message: "unclassified error"
+
+  - name: Unauthenticated
+    code: ERR_00003
+    kind: UNAUTHENTICATED
+    common: true
+    message: "the request is not authenticated"
+
+  - name: PermissionDenied
+    code: ERR_00004
+    kind: PERMISSION_DENIED
+    common: true
+    message: "permission denied"
+
+  # Sample: 01XXX
+  - name: SampleUserNotFound
+    code: ERR_01001
+    kind: NOT_FOUND
+    message: "user {id} not found"
+    vars:
+      - name: id
+        type: string
+
+  - name: SampleUserAlreadyExists
+    code: ERR_01002
+    kind: ALREADY_EXISTS
+    message: "user {name} already exists"
+    vars:
+      - name: name
+        type: string

@@ -3,26 +3,29 @@ syntax = "proto3";
 package errdetails.v1;
 option go_package = "github.com/anthonycorbacho/workspace/api/errdetails/v1;errdetailsv1";
 
-// Describes the cause of the error with structured details.
+import "google/protobuf/struct.proto";
+
+// Error describes a coded error (see kit/errors), it is attached to the gRPC status details.
 //
-// Example of an error when contacting the "organization" API when it
-// fail adding members to an organization:
+// The gRPC status carries the gRPC code of the error kind (mapped to an HTTP status by the gateway),
+// this message carries the error code and the client facing details.
+//
+// Example of the error returned by the gateway when a user is not found:
 //
 //     {
-//       "reason": "ALREADY_EXIST"
-//       "metadata": {
-//         "user_id": "1234",
-//         "org_id": "2345"
+//       "code": "ERR_01001",
+//       "message": "user 1234 not found",
+//       "details": {
+//         "id": "1234"
 //       }
 //     }
-//
-// This response indicates that the member is already part of the organization.
-message ErrorInfo {
-  // The reason of the error. This is a constant value that identifies the
-  // proximate cause of the error. Error reasons are unique within a particular
-  // domain of errors. This should be at most 63 characters and match
-  string reason = 1;
+message Error {
+  // The unique error code, formatted as ERR_<5 digits> (eg: ERR_01001).
+  string code = 1;
+
+  // The client facing message of the error.
+  string message = 2;
 
   // Additional structured details about this error.
-  map<string, string> metadata = 2;
+  google.protobuf.Struct details = 3;
 }

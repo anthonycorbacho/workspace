@@ -197,6 +197,7 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 
 		muxOpts = append(
 			muxOpts,
+			runtime.WithErrorHandler(gatewayErrorHandler(f.logger)),
 			runtime.WithMiddlewares(telemetry.GatewayMiddleware(f.httpMetrics)),
 			runtime.WithIncomingHeaderMatcher(func(s string) (string, bool) {
 				// Allowing passing custom headers

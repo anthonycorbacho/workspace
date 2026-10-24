@@ -1,32 +1,8 @@
-*   text=auto
+# Generated files: collapsed in GitHub diffs, regenerate them (make errgen, make proto-gen) instead of merging by hand.
+*.gen.go linguist-generated=true
+*.pb.go linguist-generated=true
+*.pb.gw.go linguist-generated=true
+kit/errors/docs/** linguist-generated=true
 
-# Language
-*.go    -text   diff=golang
-
-# Document
-*.md    text    diff=markdown
-*.tex   text    diff=tex
-*.sql   linguist-detectable=true
-*.sql   linguist-language=sql
-
-# Scripts
-*.bash  text eol=lf
-*.fish  text eol=lf
-*.sh    text eol=lf
-*.zsh   text eol=lf
-
-# Serialisation
-*.json  text
-*.yaml  text
-*.yml   text
-
-#
-# Exclude files from exporting
-#
-
-go.sum  linguist-generated=true
-vendor/modules.txt  linguist-generated=true
-
-.gitattributes export-ignore
-.gitignore     export-ignore
-.gitkeep       export-ignore
+# Vendored code is stored byte for byte, so `go mod vendor` (lint check) matches what is committed.
+vendor/** -text

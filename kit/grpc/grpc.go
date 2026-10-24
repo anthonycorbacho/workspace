@@ -1,21 +1,16 @@
 package grpc
 
 import (
-	"context"
 	"sync"
 	"time"
 
-	"buf.build/go/protovalidate"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	grpcprometheus "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
-	grpcvalidator "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/protovalidate"
 	grpcrecovery "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	grpcretry "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/retry"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -44,22 +39,30 @@ func InitializeMetrics(srv *grpc.Server) {
 
 // NewServer creates a gRPC server that will be by default
 // recover from panic and setup for observability.
+//
+// The errors returned to the client are coded errors (see kit/errors): the handlers errors are converted
+// with errors.FromError (a plain error becomes an Internal error, logged but never sent to the client),
+// the invalid requests are rejected with an InvalidRequest error listing the violations.
 func NewServer(opts ...grpc.ServerOption) *grpc.Server {
 	// Create a default server opts and set our default chain of interceptor
 	// if user decide to pass a custom interceptor via `grpc.ChainXXXInterceptor` or grpc.XXXInterceptor,
 	// it should be added at the end of the call chain since
 	// interpreter call chain is from left to right.
+	// The error interceptor is after the metrics one, so the metrics record the status sent to the client.
 	srvMetrics, _ := metrics()
+	recovery := grpcrecovery.WithRecoveryHandlerContext(recoverFrom(log.L()))
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainStreamInterceptor(
-			grpcrecovery.StreamServerInterceptor(grpcrecovery.WithRecoveryHandlerContext(recoverFrom(log.L()))),
+			grpcrecovery.StreamServerInterceptor(recovery),
 			srvMetrics.StreamServerInterceptor(),
-			grpcvalidator.StreamServerInterceptor(protovalidate.GlobalValidator),
+			streamServerErrorInterceptor(log.L()),
+			streamServerValidatorInterceptor(),
 		),
 		grpc.ChainUnaryInterceptor(
-			grpcrecovery.UnaryServerInterceptor(grpcrecovery.WithRecoveryHandlerContext(recoverFrom(log.L()))),
+			grpcrecovery.UnaryServerInterceptor(recovery),
 			srvMetrics.UnaryServerInterceptor(),
-			grpcvalidator.UnaryServerInterceptor(protovalidate.GlobalValidator),
+			unaryServerErrorInterceptor(log.L()),
+			unaryServerValidatorInterceptor(),
 		),
 	}
 
@@ -84,14 +87,17 @@ func NewClient(addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	// if user decide to pass a custom interceptor via `grpc.WithChainXXXInterceptor` or grpc.XXXInterceptor,
 	// it should be added at the end of the call chain since
 	// interpreter call chain is from left to right.
+	// The errors received from the server are converted to coded errors (see kit/errors) once retried.
 	_, clMetrics := metrics()
 	dialOps := []grpc.DialOption{
 		grpc.WithChainUnaryInterceptor(
+			unaryClientErrorInterceptor(),
 			grpcretry.UnaryClientInterceptor(),
 			clMetrics.UnaryClientInterceptor(),
 			unaryClientValidatorInterceptor(),
 		),
 		grpc.WithChainStreamInterceptor(
+			streamClientErrorInterceptor(),
 			grpcretry.StreamClientInterceptor(),
 			clMetrics.StreamClientInterceptor(),
 		),
@@ -130,24 +136,4 @@ func WithPerRetryTimeout(timeout time.Duration) grpcretry.CallOption {
 // You cannot automatically retry on Cancelled and Deadline, please use `WithPerRetryTimeout` for these.
 func WithCodes(retryCodes ...codes.Code) grpcretry.CallOption {
 	return grpcretry.WithCodes(retryCodes...)
-}
-
-func recoverFrom(l *log.Logger) grpcrecovery.RecoveryHandlerFuncContext {
-	return func(ctx context.Context, p any) error {
-		l.Error(ctx, "grpc recover panic", log.Any("panic", p))
-		return status.Errorf(codes.Internal, "%v", p)
-	}
-}
-
-// unaryClientValidatorInterceptor validates the outgoing requests using protovalidate rules
-// so invalid requests are rejected before reaching the server.
-func unaryClientValidatorInterceptor() grpc.UnaryClientInterceptor {
-	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		if msg, ok := req.(proto.Message); ok {
-			if err := protovalidate.Validate(msg); err != nil {
-				return status.Error(codes.InvalidArgument, err.Error())
-			}
-		}
-		return invoker(ctx, method, req, reply, cc, opts...)
-	}
 }

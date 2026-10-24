@@ -14,10 +14,13 @@ type User struct {
 	Name string
 }
 
-// Validate is a simple helper function that can be uses to validate a user struct data.
+// Validate validates the user data, the violations are returned in an InvalidRequest error
+// (same shape as the request validation of the kit grpc server).
 func (u *User) Validate() error {
 	if len(u.Name) == 0 {
-		return ErrUserNameMissing
+		return errors.InvalidRequest().WithDetail("violations", []any{
+			map[string]any{"field": "name", "message": "is required"},
+		})
 	}
 	return nil
 }
@@ -61,8 +64,9 @@ func New(storage UserStorage) *UserService {
 // this is only designed for demo purpose.
 
 // Fetch fetches a single user by the given ID.
+// If the user does not exist, SampleUserNotFound is returned.
 func (u *UserService) Fetch(ctx context.Context, id string) (*User, error) {
-	const op = "user.user"
+	const op = "user.fetch"
 	ctx, span := otel.Tracer("").Start(ctx, op)
 	defer span.End()
 
@@ -75,11 +79,16 @@ func (u *UserService) Fetch(ctx context.Context, id string) (*User, error) {
 }
 
 // Create creates a new user.
-// If the user already exist in the storage, ErrUserAlreadyExist will be returned.
+// If the user is invalid, InvalidRequest is returned, if a user with the same name already exists,
+// SampleUserAlreadyExists is returned.
 func (u *UserService) Create(ctx context.Context, usr *User) error {
 	const op = "user.create"
 	ctx, span := otel.Tracer("").Start(ctx, op)
 	defer span.End()
+
+	if err := usr.Validate(); err != nil {
+		return err
+	}
 
 	// Assign to the user an ID.
 	usr.ID = id.New()
@@ -92,8 +101,8 @@ func (u *UserService) Create(ctx context.Context, usr *User) error {
 	return nil
 }
 
-// Delete deletes the user form the user storage.
-// If the user does not exist, ErrUserNotFound will be returned.
+// Delete deletes the user from the user storage.
+// If the user does not exist, SampleUserNotFound is returned.
 func (u *UserService) Delete(ctx context.Context, id string) error {
 	const op = "user.delete"
 	ctx, span := otel.Tracer("").Start(ctx, op)

@@ -21,4 +21,12 @@
 //	if err != nil {
 //	        return errors.Wrap(err, "read failed")
 //	}
+//
+// # Coded errors
+//
+// A coded error (see Error) is an error with a unique code, a gRPC status and a client facing message,
+// defined in errors.defs.yaml. Its constructor is generated in error.gen.go and its documentation in docs/
+// by running `make errgen` (go generate).
 package errors
+
+//go:generate go run ../../sdlc/errgen -input errors.defs.yaml -output error.gen.go -docs docs

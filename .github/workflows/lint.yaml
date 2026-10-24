@@ -51,3 +51,28 @@ jobs:
         run: |
           make proto-gen
           git diff --exit-code -- api kit/pagination
+
+  errors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # the previous version of the error catalog is needed to check the released codes.
+          fetch-depth: 0
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+      - name: Check the error catalog is valid and generated
+        run: go run ./sdlc/errgen -input kit/errors/errors.defs.yaml -output kit/errors/error.gen.go -docs kit/errors/docs -check
+      - name: Check the released error codes are unchanged
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: |
+          if ! git cat-file -e "${BASE}:kit/errors/errors.defs.yaml" 2>/dev/null; then
+            echo "no previous error catalog at ${BASE}, nothing to compare"
+            exit 0
+          fi
+          git show "${BASE}:kit/errors/errors.defs.yaml" > "${RUNNER_TEMP}/errors.base.yaml"
+          go run ./sdlc/errgen -input kit/errors/errors.defs.yaml -base "${RUNNER_TEMP}/errors.base.yaml" -check

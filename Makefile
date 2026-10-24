@@ -38,6 +38,9 @@ bench:			## Run go benchmarks
 onboarding:		## Install tools for the project
 		@./sdlc/onboarding/onboarding.sh
 
+errgen:			## Generate the coded errors (kit/errors) from kit/errors/errors.defs.yaml
+		@go generate ./kit/errors/...
+
 codegen:		## install codegen in the gopath
 		@cd sdlc/codegen && $(GOCMD) install cmd/codegen.go
 

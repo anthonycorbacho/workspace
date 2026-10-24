@@ -9,6 +9,7 @@ package errdetailsv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -21,46 +22,46 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Describes the cause of the error with structured details.
+// Error describes a coded error (see kit/errors), it is attached to the gRPC status details.
 //
-// Example of an error when contacting the "organization" API when it
-// fail adding members to an organization:
+// The gRPC status carries the gRPC code of the error kind (mapped to an HTTP status by the gateway),
+// this message carries the error code and the client facing details.
+//
+// Example of the error returned by the gateway when a user is not found:
 //
 //	{
-//	  "reason": "ALREADY_EXIST"
-//	  "metadata": {
-//	    "user_id": "1234",
-//	    "org_id": "2345"
+//	  "code": "ERR_01001",
+//	  "message": "user 1234 not found",
+//	  "details": {
+//	    "id": "1234"
 //	  }
 //	}
-//
-// This response indicates that the member is already part of the organization.
-type ErrorInfo struct {
+type Error struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The reason of the error. This is a constant value that identifies the
-	// proximate cause of the error. Error reasons are unique within a particular
-	// domain of errors. This should be at most 63 characters and match
-	Reason string `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
+	// The unique error code, formatted as ERR_<5 digits> (eg: ERR_01001).
+	Code string `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
+	// The client facing message of the error.
+	Message string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
 	// Additional structured details about this error.
-	Metadata      map[string]string `protobuf:"bytes,2,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Details       *structpb.Struct `protobuf:"bytes,3,opt,name=details,proto3" json:"details,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ErrorInfo) Reset() {
-	*x = ErrorInfo{}
+func (x *Error) Reset() {
+	*x = Error{}
 	mi := &file_errdetails_v1_error_details_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ErrorInfo) String() string {
+func (x *Error) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ErrorInfo) ProtoMessage() {}
+func (*Error) ProtoMessage() {}
 
-func (x *ErrorInfo) ProtoReflect() protoreflect.Message {
+func (x *Error) ProtoReflect() protoreflect.Message {
 	mi := &file_errdetails_v1_error_details_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -72,21 +73,28 @@ func (x *ErrorInfo) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ErrorInfo.ProtoReflect.Descriptor instead.
-func (*ErrorInfo) Descriptor() ([]byte, []int) {
+// Deprecated: Use Error.ProtoReflect.Descriptor instead.
+func (*Error) Descriptor() ([]byte, []int) {
 	return file_errdetails_v1_error_details_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ErrorInfo) GetReason() string {
+func (x *Error) GetCode() string {
 	if x != nil {
-		return x.Reason
+		return x.Code
 	}
 	return ""
 }
 
-func (x *ErrorInfo) GetMetadata() map[string]string {
+func (x *Error) GetMessage() string {
 	if x != nil {
-		return x.Metadata
+		return x.Message
+	}
+	return ""
+}
+
+func (x *Error) GetDetails() *structpb.Struct {
+	if x != nil {
+		return x.Details
 	}
 	return nil
 }
@@ -95,13 +103,11 @@ var File_errdetails_v1_error_details_proto protoreflect.FileDescriptor
 
 const file_errdetails_v1_error_details_proto_rawDesc = "" +
 	"\n" +
-	"!errdetails/v1/error_details.proto\x12\rerrdetails.v1\"\xa4\x01\n" +
-	"\tErrorInfo\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason\x12B\n" +
-	"\bmetadata\x18\x02 \x03(\v2&.errdetails.v1.ErrorInfo.MetadataEntryR\bmetadata\x1a;\n" +
-	"\rMetadataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01BEZCgithub.com/anthonycorbacho/workspace/api/errdetails/v1;errdetailsv1b\x06proto3"
+	"!errdetails/v1/error_details.proto\x12\rerrdetails.v1\x1a\x1cgoogle/protobuf/struct.proto\"h\n" +
+	"\x05Error\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x121\n" +
+	"\adetails\x18\x03 \x01(\v2\x17.google.protobuf.StructR\adetailsBEZCgithub.com/anthonycorbacho/workspace/api/errdetails/v1;errdetailsv1b\x06proto3"
 
 var (
 	file_errdetails_v1_error_details_proto_rawDescOnce sync.Once
@@ -115,13 +121,13 @@ func file_errdetails_v1_error_details_proto_rawDescGZIP() []byte {
 	return file_errdetails_v1_error_details_proto_rawDescData
 }
 
-var file_errdetails_v1_error_details_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_errdetails_v1_error_details_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_errdetails_v1_error_details_proto_goTypes = []any{
-	(*ErrorInfo)(nil), // 0: errdetails.v1.ErrorInfo
-	nil,               // 1: errdetails.v1.ErrorInfo.MetadataEntry
+	(*Error)(nil),           // 0: errdetails.v1.Error
+	(*structpb.Struct)(nil), // 1: google.protobuf.Struct
 }
 var file_errdetails_v1_error_details_proto_depIdxs = []int32{
-	1, // 0: errdetails.v1.ErrorInfo.metadata:type_name -> errdetails.v1.ErrorInfo.MetadataEntry
+	1, // 0: errdetails.v1.Error.details:type_name -> google.protobuf.Struct
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -140,7 +146,7 @@ func file_errdetails_v1_error_details_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_errdetails_v1_error_details_proto_rawDesc), len(file_errdetails_v1_error_details_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

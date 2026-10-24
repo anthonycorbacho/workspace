@@ -127,43 +127,88 @@ func (c *Client) Fetch(ctx context.Context, id string) (&Struct, error) {
 ```
 
 ### Error at Handler layer
-The handler layer will return to the end-user the error formatted for him to understand and take action (call support, update a setting in the dashboard, or other actions).
+The handler layer returns the errors as is: they are coded errors created by the lower layers (see below),
+the kit gRPC server sends them to the client and turns any other error into an `Internal` error.
 
 ```go
-func (h *myGrpcHandler) Fetch(ctx context.Context, req v1.Request) (*v1.Response, error) {
-// ... perform validation and setup tracing
-
-d, err := h.myService.Fetch(ctx, req.ID)
-if err != nil {
-// ... log the error for the operator
-
-    // defined error
-    if errors.Is(err, myapp.ErrNotFound) {
-      return nil,
-        errors.Status(
-          codes.NotFound,
-          "couldnt get data because not found",
-          &errdetails.ErrorInfo{
-			Reason: "NOT_FOUND",
-			Metadata: map[string]string{
-				"id":   string(req.ID),
-			},
-		})
-    }
-    // Undefined error
-    return nil,
-        errors.Status(
-          codes.Internal,
-          err,
-          &errdetails.ErrorInfo{
-			Reason: "SERVER_ERROR",
-			Metadata: map[string]string{
-				"id":   string(req.ID),
-			},
-		})
-}
-
-// ...
+func (h *grpcUser) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResponse, error) {
+	user, err := h.service.Fetch(ctx, req.Id)
+	if err != nil {
+		return nil, err
+	}
+	// ...
 }
 ```
 
+## Coded errors
+Coded errors are defined in a single catalog, [kit/errors/errors.defs.yaml](../../kit/errors/errors.defs.yaml),
+the constructors (`kit/errors/error.gen.go`) and the documentation (`kit/errors/docs`) are generated with `make errgen`.
+
+```yaml
+# Reserved code blocks per domain:
+#   - 00XXX: kit, generic errors used by the kit.
+#   - 01XXX: sample, errors of the sample application.
+errors:
+  - name: SampleUserNotFound      # constructor name, errors.SampleUserNotFound(id)
+    code: ERR_01001               # ERR_<5 digits>, unique, in the block of the domain
+    kind: NOT_FOUND               # category of the error, mapped to a gRPC code and an HTTP status (404)
+    message: "user {id} not found" # client facing message
+    vars:                          # constructor arguments, sent in the details
+      - name: id
+        type: string
+```
+
+- **The code is part of the API**: clients and support rely on it, a released code must never change nor be reused
+  by another error. The CI rejects a catalog changing or reusing the code of an error on the main branch.
+- **Each domain owns a block of codes** (eg: `01XXX` for the sample), add a new block for a new domain.
+- **The kind is transport free**: `kit/errors` doesn't depend on gRPC, the transports map the kind to their status
+  (`kit/grpc` to a gRPC code, the gateway to an HTTP status). The kinds follow the gRPC canonical codes, which are
+  precise (eg: `ALREADY_EXISTS` vs `ABORTED` for a conflict).
+- **Internal information never reaches the client**: a var with `internal: true` and the cause (`WithCause`) are
+  only part of the error string (logs) and of the error chain (`errors.Is`, `errors.As`).
+
+### Errors by layer
+The coded errors are created where the failure is understood and bubble up:
+
+| Layer | Responsibility |
+|---|---|
+| Adapter (eg: `postgres/`, `inmem/`) | Translates the dependency errors: a missing row becomes `errors.SampleUserNotFound(id)`, a unique constraint violation `errors.SampleUserAlreadyExists(name)`, any other error is returned with context (`errors.Wrap`) and becomes `Internal`. The dependency error is kept with `WithCause`, never in the message. |
+| Root package (domain, service) | Validates the domain rules (`InvalidRequest` with violations) and passes the errors through. It re-maps an error only when the context changes its meaning, eg: a user not found while creating an order is an invalid request, not a not found order. |
+| Handler (`cmd/<service>/grpc_*.go`) | Returns the errors as is. |
+
+The root package depends on `kit/errors` only, never on a transport: the CI (depguard) rejects gRPC imports in
+`kit/errors` and in the root package of the services.
+
+To check an error, use its code:
+
+```go
+if errors.HasCode(err, errors.SampleUserNotFoundCode) {
+	// ...
+}
+```
+
+### On the wire
+A coded error travels as a gRPC status (the code of its kind and its message) with an `errdetails.v1.Error`
+detail (code, message, details). Through the HTTP gateway, the gRPC code is mapped to an HTTP status and the body is:
+
+```json
+{
+  "code": "ERR_01001",
+  "message": "user 1234 not found",
+  "details": { "id": "1234" },
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+The kit gRPC server and client handle the conversions (`kit/grpc.Status`, `kit/grpc.FromStatus`):
+- a plain error returned by a handler becomes an `Internal` error (`ERR_00000`), it is logged but its message is not sent.
+- an invalid request (protovalidate rules) is rejected with `InvalidRequest` (`ERR_00001`), the violations are in the details.
+- a panic is recovered as an `Internal` error.
+- the kit gRPC client returns coded errors: `errors.HasCode` works across services, and a coded error returned as is
+  by a service reaches the end client with its code.
+
+### Adding an error
+1. Add the error at the end of its domain block in `kit/errors/errors.defs.yaml` with the next code of the block.
+2. Run `make errgen`, it validates the catalog (unique codes and names, valid kind, placeholders...) and
+   regenerates `kit/errors/error.gen.go` and `kit/errors/docs`.
+3. Commit the catalog and the generated files, the CI fails if they are not up to date.

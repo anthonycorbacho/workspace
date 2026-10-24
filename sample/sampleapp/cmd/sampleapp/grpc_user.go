@@ -3,68 +3,36 @@ package main
 import (
 	"context"
 
-	"buf.build/go/protovalidate"
-	errdetails "github.com/anthonycorbacho/workspace/api/errdetails/v1"
 	pb "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1"
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/sample/sampleapp"
-	"google.golang.org/grpc/codes"
-)
-
-// error details keys and reasons.
-const (
-	reasonInvalidRequest = "INVALID_REQUEST"
-	metadataUserID       = "user.id"
-	metadataRequest      = "request"
 )
 
 // grpcUser represent the grpc user service implementation.
+//
+// The requests are validated by the kit grpc server (protovalidate rules of the proto).
+// The errors are coded errors created by the service and its storage (see kit/errors), they are
+// returned as is: the kit grpc server sends them to the client, and turns any other error into an
+// Internal error that is logged but never sent.
 type grpcUser struct {
 	pb.UnsafeSampleAppServiceServer
 	service *sampleapp.UserService
-	log     *log.Logger
 }
 
 func newGrpcUser(service *sampleapp.UserService) (*grpcUser, error) {
-
 	if service == nil {
 		return nil, errors.New("nil user service")
 	}
 
 	return &grpcUser{
 		service: service,
-		log:     log.L(),
 	}, nil
 }
 
 func (u *grpcUser) Fetch(ctx context.Context, request *pb.FetchRequest) (*pb.FetchResponse, error) {
-
 	user, err := u.service.Fetch(ctx, request.Id)
 	if err != nil {
-		u.log.Error(ctx, "fetching user", log.Error(err), log.String(metadataUserID, request.Id))
-
-		if errors.Is(err, sampleapp.ErrUserNotFound) {
-			return nil, errors.Status(
-				codes.NotFound,
-				"user not found",
-				&errdetails.ErrorInfo{
-					Reason: "USER_NOT_FOUND",
-					Metadata: map[string]string{
-						metadataUserID: request.Id,
-					},
-				})
-		}
-
-		return nil, errors.Status(
-			codes.Unknown,
-			err.Error(), // log the full error to provide enough context
-			&errdetails.ErrorInfo{
-				Reason: "UNKNOWN_ERROR",
-				Metadata: map[string]string{
-					metadataUserID: request.Id,
-				},
-			})
+		return nil, err
 	}
 	return &pb.FetchResponse{
 		Name: user.Name,
@@ -72,60 +40,11 @@ func (u *grpcUser) Fetch(ctx context.Context, request *pb.FetchRequest) (*pb.Fet
 }
 
 func (u *grpcUser) Create(ctx context.Context, request *pb.CreateRequest) (*pb.CreateResponse, error) {
-
-	// requests are already validated by the kit grpc server, this is kept as an example of manual validation.
-	if err := protovalidate.Validate(request); err != nil {
-		u.log.Error(ctx, "creating user", log.Error(err))
-
-		if errors.Is(err, sampleapp.ErrUserNameMissing) {
-			return nil, errors.Status(
-				codes.InvalidArgument,
-				"name is required in order to create the user",
-				&errdetails.ErrorInfo{
-					Reason: reasonInvalidRequest,
-					Metadata: map[string]string{
-						metadataRequest: request.String(),
-					},
-				})
-		}
-
-		if errors.Is(err, sampleapp.ErrUserAlreadyExist) {
-			return nil, errors.Status(
-				codes.AlreadyExists,
-				"user already exists in the system",
-				&errdetails.ErrorInfo{
-					Reason: reasonInvalidRequest,
-					Metadata: map[string]string{
-						metadataRequest: request.String(),
-					},
-				})
-		}
-
-		return nil, errors.Status(
-			codes.InvalidArgument,
-			err.Error(),
-			&errdetails.ErrorInfo{
-				Reason: reasonInvalidRequest,
-				Metadata: map[string]string{
-					metadataRequest: request.String(),
-				},
-			})
-	}
-
 	user := sampleapp.User{
 		Name: request.Name,
 	}
 	if err := u.service.Create(ctx, &user); err != nil {
-		u.log.Info(ctx, "creating user", log.Error(err))
-		return nil, errors.Status(
-			codes.InvalidArgument,
-			err.Error(),
-			&errdetails.ErrorInfo{
-				Reason: "FAIL_CREATE_USER",
-				Metadata: map[string]string{
-					metadataRequest: request.String(),
-				},
-			})
+		return nil, err
 	}
 
 	return &pb.CreateResponse{
@@ -135,31 +54,8 @@ func (u *grpcUser) Create(ctx context.Context, request *pb.CreateRequest) (*pb.C
 }
 
 func (u *grpcUser) Delete(ctx context.Context, request *pb.DeleteRequest) (*pb.DeleteResponse, error) {
-
 	if err := u.service.Delete(ctx, request.Id); err != nil {
-		u.log.Error(ctx, "deleting user", log.Error(err), log.String(metadataUserID, request.Id))
-
-		if errors.Is(err, sampleapp.ErrUserNotFound) {
-			return nil, errors.Status(
-				codes.NotFound,
-				"cannot delete unknown user",
-				&errdetails.ErrorInfo{
-					Reason: "USER_NOT_FOUND",
-					Metadata: map[string]string{
-						metadataUserID: request.Id,
-					},
-				})
-		}
-
-		return nil, errors.Status(
-			codes.InvalidArgument,
-			err.Error(),
-			&errdetails.ErrorInfo{
-				Reason: "FAIL_DELETE_USER",
-				Metadata: map[string]string{
-					metadataRequest: request.String(),
-				},
-			})
+		return nil, err
 	}
 	return &pb.DeleteResponse{}, nil
 }

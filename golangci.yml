@@ -12,6 +12,7 @@ run:
 linters:
   default: none
   enable:
+    - depguard
     - dupl
     - errcheck
     - goconst
@@ -28,6 +29,29 @@ linters:
 
   # all available settings of specific linters
   settings:
+    depguard:
+      rules:
+        # kit/errors is transport free, the gRPC conversion of the coded errors lives in kit/grpc.
+        errors-transport-free:
+          files:
+            - "**/kit/errors/*.go"
+          deny:
+            - pkg: "google.golang.org/grpc"
+              desc: "kit/errors is transport free, use kit/grpc for the gRPC conversion"
+            - pkg: "github.com/anthonycorbacho/workspace/api"
+              desc: "kit/errors is transport free, use kit/grpc for the wire format"
+        # the root package of a service holds the domain, it must not depend on a transport.
+        # Add the root package of new services here.
+        service-root-transport-free:
+          files:
+            - "**/sample/sampleapp/*.go"
+          deny:
+            - pkg: "google.golang.org/grpc"
+              desc: "the root package is transport free, return coded errors (kit/errors)"
+            - pkg: "github.com/grpc-ecosystem"
+              desc: "the root package is transport free"
+            - pkg: "github.com/anthonycorbacho/workspace/api"
+              desc: "the root package is transport free, the API types belong to the handlers"
     errcheck:
       # report about not checking of errors in type assetions: `a := b.(MyStruct)`;
       # default is false: such cases aren't reported by default.

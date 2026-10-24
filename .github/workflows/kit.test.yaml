@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - "kit/**"
+      - "sdlc/errgen/**"
       - "api/**"
       - "go.mod"
       - "go.sum"
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - "kit/**"
+      - "sdlc/errgen/**"
       - "api/**"
       - "go.mod"
       - "go.sum"
@@ -45,7 +47,7 @@ jobs:
       - name: Start up docker compose
         run: docker compose -f kit/docker-compose.yaml up -d --wait --remove-orphans
       - name: Run Kit Test
-        run: go test -race -p=6 -cpu=1,4 ./kit/...
+        run: go test -race -p=6 -cpu=1,4 ./kit/... ./sdlc/errgen/...
       - name: Dump containers logs
         if: failure()
         run: docker compose -f kit/docker-compose.yaml logs --tail=200
