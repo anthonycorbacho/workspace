@@ -1,0 +1,105 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: demoapp
+  namespace: demo
+spec:
+  type: ClusterIP
+  selector:
+    app: demoapp
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: http
+    - name: grpc
+      protocol: TCP
+      port: 8081
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: demoapp
+  name: demoapp
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demoapp
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: demoapp
+      annotations:
+        # metrics scraped by prometheus.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9090"
+        # profiles scraped by alloy (pprof on the probes port).
+        pyroscope.io/scrape: "true"
+        pyroscope.io/application-name: demo.demoapp
+        pyroscope.io/port: "9091"
+    spec:
+      automountServiceAccountToken: false
+      serviceAccountName: demo
+      containers:
+        - image: local/demo/demoapp
+          imagePullPolicy: IfNotPresent
+          name: demoapp
+          env:
+            - name: OTL_ENDPOINT
+              value: alloy.monitoring.svc.cluster.local:4317
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 8081
+            - name: metrics
+              containerPort: 9090
+            - name: probes
+              containerPort: 9091
+          resources:
+            limits:
+              cpu: 256m
+              memory: 128Mi
+            requests:
+              cpu: 128m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
+      restartPolicy: Always
+      securityContext:
+        # the user of the base image (see .ko.yaml).
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      terminationGracePeriodSeconds: 60

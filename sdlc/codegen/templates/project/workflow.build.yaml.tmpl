@@ -1,0 +1,30 @@
+name: {{ .Namespace }}/{{ .Project }} Build and Push
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "{{ .Namespace }}/{{ .Project }}/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".ko.yaml"
+      - ".github/workflows/{{ .Namespace }}.{{ .Project }}.build.yaml"
+      - ".github/workflows/ko-builder.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  # Build the image of the service and push it
+  build-and-push:
+    # local reusable workflow, so the builder is the one of the same commit.
+    uses: ./.github/workflows/ko-builder.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      service: {{ .Project }}
+      namespace: {{ .Namespace }}

@@ -1,0 +1,39 @@
+name: demo/demoapp Unit test
+on:
+  push:
+    branches: [main]
+    paths:
+      - "demo/demoapp/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/demo.demoapp.test.yaml"
+  pull_request:
+    paths:
+      - "demo/demoapp/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/demo.demoapp.test.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+      - name: Run Test
+        run: go test -race -p=6 -cpu=1,4 ./demo/demoapp/...

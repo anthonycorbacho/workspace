@@ -1,0 +1,84 @@
+name: sdlc/codegen test
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdlc/codegen/**"
+      - "kit/**"
+      - "sample/**"
+      - "overlays/local/**"
+      - "Tiltfile"
+      - "go.mod"
+      - "golangci.yml"
+      - ".github/workflows/sdlc.codegen.test.yaml"
+  pull_request:
+    paths:
+      - "sdlc/codegen/**"
+      - "kit/**"
+      - "sample/**"
+      - "overlays/local/**"
+      - "Tiltfile"
+      - "go.mod"
+      - "golangci.yml"
+      - ".github/workflows/sdlc.codegen.test.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # codegen is a separate module, it must not be resolved through a go.work.
+  GOWORK: "off"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdlc/codegen
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'sdlc/codegen/go.mod'
+          cache-dependency-path: 'sdlc/codegen/go.sum'
+      - name: Check go.mod is tidy
+        run: go mod tidy -diff
+      - name: Test
+        run: go test -race ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          working-directory: sdlc/codegen
+          args: -c ../../golangci.yml
+
+  # e2e generates a project in the checkout and checks the workspace still builds and deploys.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: 'go.mod'
+      - name: Generate a project
+        run: make codegen ARGS="-namespace demo -project demoapp"
+      - name: Build, vet and test the workspace
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./demo/...
+      - name: Render the local overlay
+        run: kubectl kustomize overlays/local > /dev/null
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+          args: -c golangci.yml

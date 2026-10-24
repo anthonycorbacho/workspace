@@ -1,0 +1,16 @@
+load('ext://ko', 'ko_build')
+
+ko_build(
+    'local/{{ .Namespace }}/{{ .Project }}',
+    './cmd/{{ .Project }}',
+    deps = ['../../api/', '../../kit/', '../../vendor/', './', '../../go.mod', '../../go.sum'],
+)
+
+k8s_resource('{{ .Project }}',
+    # forward the ports to reach the service locally, eg: '8010:8080' for http.
+    # port_forwards=[
+    #     '8010:8080',  # http (gRPC gateway)
+    #     '8011:9090',  # metrics
+    # ],
+    labels=["{{ .Namespace }}"],
+)

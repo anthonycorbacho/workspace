@@ -1,0 +1,30 @@
+name: sample/billing Build and Push
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sample/billing/**"
+      - "kit/**"
+      - "api/**"
+      - "go.mod"
+      - "go.sum"
+      - ".ko.yaml"
+      - ".github/workflows/sample.billing.build.yaml"
+      - ".github/workflows/ko-builder.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  # Build the image of the service and push it
+  build-and-push:
+    # local reusable workflow, so the builder is the one of the same commit.
+    uses: ./.github/workflows/ko-builder.yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      service: billing
+      namespace: sample

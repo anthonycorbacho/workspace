@@ -41,8 +41,8 @@ onboarding:		## Install tools for the project
 errgen:			## Generate the coded errors (kit/errors) from kit/errors/errors.defs.yaml
 		@go generate ./kit/errors/...
 
-codegen:		## install codegen in the gopath
-		@cd sdlc/codegen && $(GOCMD) install cmd/codegen.go
+codegen:		## Scaffold a new project in a namespace (eg: make codegen ARGS="-namespace sample -project billing")
+		@GOWORK=off go -C sdlc/codegen run ./cmd/codegen -root $(CURDIR) $(ARGS)
 
 help:			## Show this help
 		@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'

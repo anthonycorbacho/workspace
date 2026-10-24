@@ -46,14 +46,16 @@ workspace/
 │   ├── sampleapp
 │   ├── kustomization.yaml
 │   ├── namespace.yaml
-│   ├── resource-limit.yaml
-│   └── service-account.yaml 
+│   └── service-account.yaml
 ├── sdlc                          # Represent a software development tools
+│   ├── codegen                   # Scaffold a new project (make codegen)
+│   ├── documentation             # Decisions and guidelines
+│   ├── errgen                    # Generate the coded errors (make errgen)
+│   └── onboarding                # Check the required tools (make onboarding)
 ├── overlays                      # Represent a deployment mode (local, staging, production)
-│   └── local
-│       ├── kustomization.yaml
-│       └── dependencie           # Represent a dependency configuration
-├── vendors                       # Represent all the vendor files
+│   ├── local                     # Namespaces deployed locally
+│   └── local-foundation          # Local dependencies (monitoring stack)
+├── vendor                        # Represent all the vendor files
 ├── .ko.yaml                      # Ko build settings
 ├── LICENSE                       # Workspace licensing
 ├── Makefile                      # Simple Makefile for short-cut. run command `make help`
@@ -96,6 +98,14 @@ tilt up
 ```
 
 Workspace comes with a [simple app](sample/sampleapp) that illustrate how to use this framework.
+
+### Create a new service
+`make codegen` scaffolds a new project in a namespace (kubernetes files, minimal main, Tiltfile and CI workflows),
+see [sdlc/README.md](sdlc/README.md#codegen).
+
+```bash
+make codegen ARGS="-namespace sample -project billing"
+```
 
 ### Accessible Dashboard
  - Tilt dashboard http://localhost:10350/

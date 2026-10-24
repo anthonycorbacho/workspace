@@ -1,0 +1,20 @@
+# {{ .Project }}
+
+`{{ .Project }}` is a service of the `{{ .Namespace }}` namespace, it was generated with `make codegen`.
+
+## Layout
+
+- `cmd/{{ .Project }}/main.go`: composition root, configuration, wiring and service start.
+- `kube.yaml`: kubernetes deployment and service (registered in `{{ .Namespace }}/kustomization.yaml`).
+- `Tiltfile`: local development, included in the root Tiltfile.
+
+See [go-application-layout](../../sdlc/documentation/go-application-layout.md) to add the domain (root package),
+the adapters and the API, and [sample/sampleapp](../../sample/sampleapp) for a complete example.
+
+## Run
+
+```bash
+tilt up
+```
+
+The service exposes its metrics on `:9090` and its health probes and profiling on `:9091`.
