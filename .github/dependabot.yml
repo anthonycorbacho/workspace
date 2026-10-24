@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # the actions are pinned to a commit, dependabot keeps them up to date.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -4,14 +4,9 @@ import (
 	"context"
 	stdsql "database/sql"
 	stderrors "errors"
-	"fmt"
-	"io/fs"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/golang-migrate/migrate/v4"
-	pgx "github.com/golang-migrate/migrate/v4/database/pgx/v5"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jmoiron/sqlx"
 	"github.com/uptrace/opentelemetry-go-extra/otelsql"
 	"github.com/uptrace/opentelemetry-go-extra/otelsqlx"
@@ -23,30 +18,58 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// Open knows how to open a database connection based on connection string.
+// DB is a pool of database connections instrumented with OpenTelemetry (traces and metrics).
 //
-// connection string should follow this format
+// It embeds *sqlx.DB, all the sqlx methods (GetContext, SelectContext, BeginTxx, ...) are available.
+// A DB must be created with Open and closed with Close to release its metrics.
+type DB struct {
+	*sqlx.DB
+
+	// stats holds the registration of the DB stats metrics callbacks, released by Close.
+	stats *callbackRecorder
+}
+
+// Open opens a database connection pool based on the connection string and checks
+// that the database is reachable, it returns an error if the database cannot be pinged
+// before ctx is done.
+//
+// The connection string should follow this format
 // postgresql://user:password@host/db[?options]
-func Open(connection string, ops ...Option) (*sqlx.DB, error) {
-	url, err := dburl.Parse(connection)
+//
+// The database must be closed with Close to release its connections and metrics.
+func Open(ctx context.Context, connection string, opts ...Option) (*DB, error) {
+	db, err := open(connection, opts...)
 	if err != nil {
-		err = errors.Wrap(err, "parsing database connection string")
 		return nil, err
 	}
 
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close() //nolint:errcheck // the ping error is more relevant.
+		return nil, errors.Wrap(err, "ping db")
+	}
+	return db, nil
+}
+
+// open opens a database connection pool without checking the database is reachable.
+func open(connection string, opts ...Option) (*DB, error) {
+	url, err := dburl.Parse(connection)
+	if err != nil {
+		return nil, errors.Wrap(err, "parsing database connection string")
+	}
+
 	// Setup SQL options.
-	opts := &options{
+	o := &options{
 		MaxOpenConns:    10,
 		MaxIdleConns:    7,
 		MaxConnLifeTime: 30 * time.Minute,
 		MaxConnIdleTime: 10 * time.Minute,
 	}
-	for _, o := range ops {
-		o(opts)
+	for _, opt := range opts {
+		opt(o)
 	}
 
-	if len(opts.StatementCacheMode) > 0 {
-		mode, err := queryExecMode(opts.StatementCacheMode)
+	if len(o.StatementCacheMode) > 0 {
+		mode, err := queryExecMode(o.StatementCacheMode)
 		if err != nil {
 			return nil, err
 		}
@@ -62,28 +85,26 @@ func Open(connection string, ops ...Option) (*sqlx.DB, error) {
 		driver = "pgx"
 	}
 
-	otelAttributes := otelsql.WithAttributes(semconv.ServerAddress(url.Hostname()))
+	// otelsql reports the DB stats (e.g. # sql connection, etc) through a callback it never
+	// unregisters, the recorder keeps its registration so Close can release it.
+	recorder := newCallbackRecorder()
 
 	// Connect to the database using the otel driver wrapper.
-	db, err := otelsqlx.Open(driver, connection, otelsql.WithAttributes(semconv.DBSystemNamePostgreSQL),
-		otelAttributes,
+	db, err := otelsqlx.Open(driver, connection,
+		otelsql.WithAttributes(semconv.DBSystemNamePostgreSQL, semconv.ServerAddress(url.Hostname())),
+		otelsql.WithMeterProvider(recorder),
 	)
 	if err != nil {
+		_ = recorder.unregister() //nolint:errcheck // the open error is more relevant.
 		return nil, errors.Wrap(err, "open db")
 	}
 
-	// By default, otelsqlx do not record DB stats.
-	// In order to get DB stats (e.g. # sql connection, etc) we need to call ReportDBStatsMetrics
-	// and pass sql.DB pointer.
-	// this is only available from otelsql pkg.
-	otelsql.ReportDBStatsMetrics(db.DB, otelAttributes)
+	db.SetMaxOpenConns(o.MaxOpenConns)
+	db.SetMaxIdleConns(o.MaxIdleConns)
+	db.SetConnMaxLifetime(o.MaxConnLifeTime)
+	db.SetConnMaxIdleTime(o.MaxConnIdleTime)
 
-	db.SetMaxOpenConns(opts.MaxOpenConns)
-	db.SetMaxIdleConns(opts.MaxIdleConns)
-	db.SetConnMaxLifetime(opts.MaxConnLifeTime)
-	db.SetConnMaxIdleTime(opts.MaxConnIdleTime)
-
-	return db, nil
+	return &DB{DB: db, stats: recorder}, nil
 }
 
 // queryExecMode returns the pgx default_query_exec_mode of the given statement cache mode.
@@ -99,9 +120,19 @@ func queryExecMode(mode string) (string, error) {
 	return "", errors.Newf("unknown statement cache mode %q", mode)
 }
 
+// Close closes the database connections and releases its metrics.
+// Closing an already closed database is a no-op.
+func (db *DB) Close() error {
+	err := db.DB.Close()
+	if db.stats != nil {
+		err = stderrors.Join(err, db.stats.unregister())
+	}
+	return err
+}
+
 // StatusCheck returns nil if it can successfully talk to the database. It
 // returns a non-nil error otherwise.
-func StatusCheck(ctx context.Context, db *sqlx.DB) error {
+func (db *DB) StatusCheck(ctx context.Context) error {
 	ctx, span := otel.Tracer("db").Start(ctx, "db.StatusCheck")
 	defer span.End()
 
@@ -114,98 +145,28 @@ func StatusCheck(ctx context.Context, db *sqlx.DB) error {
 	return db.QueryRowContext(ctx, q).Scan(&tmp)
 }
 
-// Migrate looks at the currently active migration version of the service
-// and will migrate all the way up (applying all up migrations).
-// Migrate will look at the folder `db` by default (generally assets/db).
+// WithTx runs fn in a transaction: the transaction is committed if fn returns nil and
+// rolled back if fn returns an error or panics (the panic is propagated).
 //
-// The migration runs on its own connection opened from the given connection string
-// (see Open for the format) and closed once done.
-func Migrate(connection string, service string, fs fs.FS) error {
-	return MigrateWithPath(connection, service, fs, "db")
-}
-
-// MigrateWithPath looks at the currently active migration version of the service
-// and will migrate all the way up (applying all up migrations)
-// from the given fs path.
-func MigrateWithPath(connection string, service string, fs fs.FS, path string) error {
-	return runMigration(connection, service, fs, path, func(m *migrate.Migrate) error {
-		return m.Up()
-	})
-}
-
-// MigrateToVersion should be use to apply down or up script to a given version.
-func MigrateToVersion(connection string, service string, fs fs.FS, version uint) error {
-	return runMigration(connection, service, fs, "db", func(m *migrate.Migrate) error {
-		return m.Migrate(version)
-	})
-}
-
-// runMigration runs the given migration on a dedicated database connection.
-//
-// A dedicated connection is required because the migration driver holds a connection
-// that is only released by closing the whole *sql.DB.
-func runMigration(connection string, service string, fs fs.FS, path string, run func(m *migrate.Migrate) error) (err error) {
-	if len(service) == 0 {
-		return errors.New("service name is required")
-	}
-
-	d, err := iofs.New(fs, path)
+// The error of fn is returned as is so it can be inspected by the caller.
+func (db *DB) WithTx(ctx context.Context, fn func(tx *sqlx.Tx) error) error {
+	tx, err := db.BeginTxx(ctx, nil)
 	if err != nil {
-		return errors.Wrap(err, "reading migrations")
-	}
-
-	db, err := openMigrationDB(connection)
-	if err != nil {
-		_ = d.Close() //nolint: the open error is more relevant
-		return err
-	}
-
-	driver, err := pgx.WithInstance(db, &pgx.Config{
-		MigrationsTable: fmt.Sprintf("%s_schema_migrations", service),
-	})
-	if err != nil {
-		_ = d.Close()  //nolint: the driver error is more relevant
-		_ = db.Close() //nolint: the driver error is more relevant
-		return errors.Wrap(err, "creating migration driver")
-	}
-
-	m, err := migrate.NewWithInstance("iofs", d, "pgx", driver)
-	if err != nil {
-		_ = d.Close()      //nolint: the migrate error is more relevant
-		_ = driver.Close() //nolint: the migrate error is more relevant
-		return errors.Wrap(err, "creating migration")
+		return errors.Wrap(err, "begin transaction")
 	}
 	defer func() {
-		// closes the source, the driver connection and the dedicated *sql.DB.
-		srcErr, dbErr := m.Close()
-		if err == nil {
-			err = stderrors.Join(srcErr, dbErr)
+		if p := recover(); p != nil {
+			_ = tx.Rollback() //nolint:errcheck // the panic is more relevant.
+			panic(p)
 		}
 	}()
 
-	if err := run(m); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return errors.Wrap(err, "running migration")
+	if err := fn(tx); err != nil {
+		// the transaction is already rolled back when its context is done.
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, stdsql.ErrTxDone) {
+			err = stderrors.Join(err, errors.Wrap(rbErr, "rollback transaction"))
+		}
+		return err
 	}
-	return nil
-}
-
-// openMigrationDB opens a single connection database without instrumentation,
-// it is only used for the duration of a migration.
-func openMigrationDB(connection string) (*stdsql.DB, error) {
-	url, err := dburl.Parse(connection)
-	if err != nil {
-		return nil, errors.Wrap(err, "parsing database connection string")
-	}
-
-	driver := url.Driver
-	if driver == "postgres" {
-		driver = "pgx"
-	}
-
-	db, err := stdsql.Open(driver, connection)
-	if err != nil {
-		return nil, errors.Wrap(err, "open db")
-	}
-	db.SetMaxOpenConns(1)
-	return db, nil
+	return errors.Wrap(tx.Commit(), "commit transaction")
 }

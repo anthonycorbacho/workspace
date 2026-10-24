@@ -65,12 +65,12 @@ func (c *TestClock) Now() time.Time {
 	return t
 }
 
-func TestGetElapsedTime(t *testing.T) {
+func TestElapsedTime(t *testing.T) {
 	exp := NewExponentialBackOff()
 	exp.Clock = &TestClock{}
 	exp.Reset()
 
-	elapsedTime := exp.GetElapsedTime()
+	elapsedTime := exp.ElapsedTime()
 	if elapsedTime != time.Second {
 		t.Errorf("elapsedTime=%d", elapsedTime)
 	}
@@ -170,13 +170,13 @@ func TestNewExponentialBackOffDefaults(t *testing.T) {
 func TestExponentialBackOffSequence(t *testing.T) {
 	tests := []struct {
 		name           string
-		opts           []ExponentialBackOffOpts
+		opts           []ExponentialBackOffOption
 		want           []time.Duration
 		advanceElapsed bool // use a clock moving by 1s on each call.
 	}{
 		{
 			name: "no randomization",
-			opts: []ExponentialBackOffOpts{
+			opts: []ExponentialBackOffOption{
 				WithInitialInterval(100 * time.Millisecond),
 				WithRandomizationFactor(0),
 				WithMultiplier(2),
@@ -189,7 +189,7 @@ func TestExponentialBackOffSequence(t *testing.T) {
 		},
 		{
 			name: "multiplier of one is constant",
-			opts: []ExponentialBackOffOpts{
+			opts: []ExponentialBackOffOption{
 				WithInitialInterval(time.Second),
 				WithRandomizationFactor(0),
 				WithMultiplier(1),
@@ -198,7 +198,7 @@ func TestExponentialBackOffSequence(t *testing.T) {
 		},
 		{
 			name: "zero max elapsed time never stops",
-			opts: []ExponentialBackOffOpts{
+			opts: []ExponentialBackOffOption{
 				WithInitialInterval(time.Second),
 				WithRandomizationFactor(0),
 				WithMultiplier(1),
@@ -209,7 +209,7 @@ func TestExponentialBackOffSequence(t *testing.T) {
 		},
 		{
 			name: "stop once max elapsed time is reached",
-			opts: []ExponentialBackOffOpts{
+			opts: []ExponentialBackOffOption{
 				WithInitialInterval(time.Second),
 				WithRandomizationFactor(0),
 				WithMultiplier(1),
@@ -221,7 +221,7 @@ func TestExponentialBackOffSequence(t *testing.T) {
 		},
 		{
 			name: "custom stop duration once max elapsed time is reached",
-			opts: []ExponentialBackOffOpts{
+			opts: []ExponentialBackOffOption{
 				WithInitialInterval(time.Second),
 				WithRandomizationFactor(0),
 				WithMultiplier(1),

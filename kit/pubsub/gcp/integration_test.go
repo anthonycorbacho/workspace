@@ -12,6 +12,7 @@ import (
 	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/stretchr/testify/suite"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -23,7 +24,7 @@ type gcpTestSuite struct {
 	admin *gcppubsub.Client
 }
 
-func TestGcpTestSuite(t *testing.T) {
+func TestGCPTestSuite(t *testing.T) {
 	suite.Run(t, new(gcpTestSuite))
 }
 
@@ -34,6 +35,8 @@ func (g *gcpTestSuite) SetupSuite() {
 	c, err := gcppubsub.NewClient(context.Background(), testProject)
 	g.Require().NoError(err)
 	g.admin = c
+	// the trace context is propagated with the global propagator, set by kit/telemetry.
+	tracingtest.UsePropagator(g.T())
 }
 
 func (g *gcpTestSuite) TearDownSuite() {
@@ -85,7 +88,7 @@ func (g *gcpTestSuite) TestPublishAndSubscribe() {
 	}
 	choke := make(chan received, 2)
 	err = s.Subscribe(ctx, sub, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
-		choke <- received{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx)}
+		choke <- received{msg: msg.String(), metadata: metadata, topic: pubsub.Topic(ctx)}
 		return nil
 	})
 	g.Require().NoError(err)
@@ -202,7 +205,7 @@ func (g *gcpTestSuite) TestTracePropagation() {
 	select {
 	case r := <-ch:
 		g.Equal(topic, r.metadata["topic"])
-		g.Equal(sc.TraceID().String(), r.metadata["trace"])
+		g.Contains(r.metadata["traceparent"], sc.TraceID().String())
 		g.Equal(sc.TraceID(), r.traceID)
 	case <-time.After(10 * time.Second):
 		g.FailNow("timeout waiting for message")
@@ -252,37 +255,69 @@ func (g *gcpTestSuite) TestSubscribeWithAckNackRedelivery() {
 	}
 }
 
-func (g *gcpTestSuite) TestHandlerErrorKeepsSubscription() {
-	ctx := context.Background()
-	topic, sub := g.createTopic(false)
-
-	p, err := NewPublisher(g.newClient())
-	g.Require().NoError(err)
-	defer p.Close()
-	s, err := NewSubscriber(g.newClient())
-	g.Require().NoError(err)
-	defer s.Close()
-
-	ch := make(chan string, 2)
-	err = s.Subscribe(ctx, sub, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
-		ch <- msg.String()
-		return fmt.Errorf("handler failed for %s", msg)
-	})
-	g.Require().NoError(err)
-
-	g.Require().NoError(p.Publish(ctx, topic, []byte("first")))
-	g.Require().NoError(p.Publish(ctx, topic, []byte("second")))
-
-	got := []string{}
-	for range 2 {
-		select {
-		case msg := <-ch:
-			got = append(got, msg)
-		case <-time.After(10 * time.Second):
-			g.FailNow("timeout waiting for messages")
-		}
+// TestSubscribeAcksOnSuccess checks that Subscribe acks a message once handled and nacks it when
+// the handler failed, so it is redelivered.
+func (g *gcpTestSuite) TestSubscribeAcksOnSuccess() {
+	tests := []struct {
+		name           string
+		failFirst      bool
+		wantDeliveries int
+	}{
+		{name: "handled message is acked", wantDeliveries: 1},
+		{name: "failed message is redelivered", failFirst: true, wantDeliveries: 2},
 	}
-	g.ElementsMatch([]string{"first", "second"}, got)
+	for _, tt := range tests {
+		g.Run(tt.name, func() {
+			ctx := context.Background()
+			topic, sub := g.createTopic(false)
+
+			p, err := NewPublisher(g.newClient())
+			g.Require().NoError(err)
+			defer p.Close()
+			s, err := NewSubscriber(g.newClient())
+			g.Require().NoError(err)
+			defer s.Close()
+
+			var mu sync.Mutex
+			deliveries := map[string]int{}
+			handled := make(chan string, 10)
+			err = s.Subscribe(ctx, sub, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+				mu.Lock()
+				deliveries[msg.String()]++
+				n := deliveries[msg.String()]
+				mu.Unlock()
+				if tt.failFirst && n == 1 {
+					return fmt.Errorf("handler failed for %s", msg)
+				}
+				select {
+				case handled <- msg.String():
+				default:
+				}
+				return nil
+			})
+			g.Require().NoError(err)
+
+			g.Require().NoError(p.Publish(ctx, topic, []byte("first")))
+			g.Require().NoError(p.Publish(ctx, topic, []byte("second")))
+
+			got := []string{}
+			for range 2 {
+				select {
+				case msg := <-handled:
+					got = append(got, msg)
+				case <-time.After(20 * time.Second):
+					g.FailNow("timeout waiting for messages")
+				}
+			}
+			g.ElementsMatch([]string{"first", "second"}, got)
+
+			// a message that is not acked would be redelivered right away.
+			time.Sleep(time.Second)
+			mu.Lock()
+			defer mu.Unlock()
+			g.Equal(map[string]int{"first": tt.wantDeliveries, "second": tt.wantDeliveries}, deliveries)
+		})
+	}
 }
 
 func (g *gcpTestSuite) TestSubscriptionContextCanceled() {
@@ -334,4 +369,59 @@ func (g *gcpTestSuite) TestPublishFullyQualifiedTopic() {
 	case <-time.After(10 * time.Second):
 		g.FailNow("timeout waiting for message")
 	}
+}
+
+// TestConcurrentLookups checks that concurrent lookups of a topic or a subscription share a
+// single client, and that no topic is added once the publisher is closed.
+func (g *gcpTestSuite) TestConcurrentLookups() {
+	ctx := context.Background()
+	topic, sub := g.createTopic(false)
+
+	p, err := NewPublisher(g.newClient())
+	g.Require().NoError(err)
+	s, err := NewSubscriber(g.newClient())
+	g.Require().NoError(err)
+	defer s.Close()
+
+	tests := []struct {
+		name   string
+		lookup func() (any, error)
+	}{
+		{name: "topic", lookup: func() (any, error) { return p.topic(ctx, topic) }},
+		{name: "subscription", lookup: func() (any, error) { return s.subscription(ctx, sub) }},
+	}
+	for _, tt := range tests {
+		g.Run(tt.name, func() {
+			const n = 10
+			got := make([]any, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Go(func() {
+					v, err := tt.lookup()
+					g.NoError(err)
+					got[i] = v
+				})
+			}
+			wg.Wait()
+			for _, v := range got {
+				g.Same(got[0], v)
+			}
+		})
+	}
+	g.Len(p.topics, 1)
+	g.Len(s.activeSubscriptions, 1)
+
+	// as if Close ran during the check of the topic, the client is still usable.
+	p.closeLock.Lock()
+	p.closed = true
+	p.closeLock.Unlock()
+	other, _ := g.createTopic(false)
+	_, err = p.topic(ctx, other)
+	g.ErrorIs(err, pubsub.ErrPublisherClosed)
+	g.Len(p.topics, 1, "a topic added after Close would never be stopped")
+
+	for _, t := range p.topics {
+		t.Stop()
+	}
+	g.NoError(p.client.Close())
 }

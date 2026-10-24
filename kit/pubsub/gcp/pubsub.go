@@ -3,62 +3,49 @@ package gcp
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
+	gcppubsub "cloud.google.com/go/pubsub/v2"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// tracer represent a GCP pubsub tracer
+// topicAttribute is the attribute holding the topic a message is published to.
+const topicAttribute = "topic"
+
+// tracer is the tracer of the Google Cloud Pub/Sub publishers and subscribers.
 var tracer = otel.Tracer("kit/pubsub/gcp")
 
-func tracingAttributes(span trace.Span, m map[string]string) {
-
-	m["trace"] = span.SpanContext().TraceID().String()
-	m["span"] = span.SpanContext().SpanID().String()
-	m["trace-state"] = span.SpanContext().TraceState().String()
-	m["trace-remote"] = strconv.FormatBool(span.SpanContext().IsRemote())
-	m["trace-sampled"] = strconv.FormatBool(span.SpanContext().IsSampled())
+// startPublishSpan starts the span publishing msg to topic, the span context is injected in the
+// message attributes.
+func startPublishSpan(ctx context.Context, tracer trace.Tracer, topic string, msg *gcppubsub.Message) (context.Context, trace.Span) {
+	if msg.Attributes == nil {
+		msg.Attributes = map[string]string{}
+	}
+	attrs := []attribute.KeyValue{semconv.MessagingMessageBodySize(len(msg.Data))}
+	if msg.OrderingKey != "" {
+		attrs = append(attrs, semconv.MessagingGCPPubSubMessageOrderingKey(msg.OrderingKey))
+	}
+	return tracing.StartPublish(ctx, tracer, semconv.MessagingSystemGCPPubSub, topic, propagation.MapCarrier(msg.Attributes), attrs...)
 }
 
-func contextFromTracingAttributes(ctx context.Context, m map[string]string) context.Context {
-	traceID, err := trace.TraceIDFromHex(m["trace"])
-	if err != nil {
-		return ctx
+// startProcessSpan starts the span processing msg received from subscription, child of the
+// span the message was published with.
+func startProcessSpan(ctx context.Context, tracer trace.Tracer, subscription string, msg *gcppubsub.Message) (context.Context, trace.Span) {
+	// the topic is unknown when the message was not published by a Publisher.
+	destination := msg.Attributes[topicAttribute]
+	if destination == "" {
+		destination = subscription
 	}
-	spanID, err := trace.SpanIDFromHex(m["span"])
-	if err != nil {
-		return ctx
-	}
-
-	stats, err := trace.ParseTraceState(m["trace-state"])
-	if err != nil {
-		return ctx
-	}
-
-	remote, err := strconv.ParseBool(m["trace-remote"])
-	if err != nil {
-		return ctx
-	}
-
-	// the flag is written with strconv.FormatBool, a missing flag (eg: message published
-	// by an older version) is considered not sampled.
-	sampled := m["trace-sampled"] == "true"
-
-	scc := trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceState: stats,
-		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
-		Remote:     remote,
-	}
-
-	sc := trace.NewSpanContext(scc)
-	if !sc.IsValid() {
-		return ctx
-	}
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
+	return tracing.StartProcess(ctx, tracer, semconv.MessagingSystemGCPPubSub, destination, propagation.MapCarrier(msg.Attributes),
+		semconv.MessagingDestinationSubscriptionName(subscription),
+		semconv.MessagingMessageID(msg.ID),
+		semconv.MessagingMessageBodySize(len(msg.Data)),
+	)
 }
 
 // resourceName returns the fully qualified name of a pubsub resource (topics or subscriptions).

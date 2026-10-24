@@ -2,62 +2,74 @@ package mqtt
 
 import (
 	"context"
-	"strconv"
 
-	mqtt "github.com/eclipse/paho.golang/paho"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
+	"github.com/eclipse/paho.golang/paho"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// tracer represent a MQTT pubsub tracer
+// topicProperty is the user property holding the topic a message is published to.
+const topicProperty = "topic"
+
+// tracer is the tracer of the MQTT publishers and subscribers.
 var tracer = otel.Tracer("kit/pubsub/mqtt")
 
-// tracingAttributes returns the user properties with the tracing attributes added,
-// properties are returned since UserProperties.Add appends to the slice.
-func tracingAttributes(span trace.Span, m mqtt.UserProperties) mqtt.UserProperties {
-	m.Add("trace", span.SpanContext().TraceID().String())
-	m.Add("span", span.SpanContext().SpanID().String())
-	m.Add("trace-state", span.SpanContext().TraceState().String())
-	m.Add("trace-remote", strconv.FormatBool(span.SpanContext().IsRemote()))
-	m.Add("trace-sampled", strconv.FormatBool(span.SpanContext().IsSampled()))
-	return m
+// system is the messaging.system attribute of the MQTT spans.
+var system = semconv.MessagingSystemKey.String("mqtt")
+
+// userPropertiesCarrier adapts the MQTT v5 user properties of a message to propagation.TextMapCarrier.
+type userPropertiesCarrier struct {
+	props *paho.UserProperties
 }
 
-func contextFromTracingAttributes(ctx context.Context, m mqtt.UserProperties) context.Context {
-	traceID, err := trace.TraceIDFromHex(m.Get("trace"))
-	if err != nil {
-		return ctx
-	}
-	spanID, err := trace.SpanIDFromHex(m.Get("span"))
-	if err != nil {
-		return ctx
-	}
+var _ propagation.TextMapCarrier = userPropertiesCarrier{}
 
-	stats, err := trace.ParseTraceState(m.Get("trace-state"))
-	if err != nil {
-		return ctx
-	}
+// Get returns the value of the first property with key.
+func (c userPropertiesCarrier) Get(key string) string {
+	return c.props.Get(key)
+}
 
-	remote, err := strconv.ParseBool(m.Get("trace-remote"))
-	if err != nil {
-		return ctx
+// Set sets the value of the property with key, replacing the properties with the same key.
+func (c userPropertiesCarrier) Set(key, value string) {
+	props := (*c.props)[:0]
+	for _, p := range *c.props {
+		if p.Key != key {
+			props = append(props, p)
+		}
 	}
+	*c.props = append(props, paho.UserProperty{Key: key, Value: value})
+}
 
-	// the flag is written with strconv.FormatBool, a missing flag (eg: message published
-	// by an older version) is considered not sampled.
-	sampled := m.Get("trace-sampled") == "true"
-
-	scc := trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceState: stats,
-		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
-		Remote:     remote,
+// Keys returns the keys of the properties.
+func (c userPropertiesCarrier) Keys() []string {
+	keys := make([]string, 0, len(*c.props))
+	for _, p := range *c.props {
+		keys = append(keys, p.Key)
 	}
+	return keys
+}
 
-	sc := trace.NewSpanContext(scc)
-	if !sc.IsValid() {
-		return ctx
+// userProperties returns the user properties of msg, the properties are created when missing.
+func userProperties(msg *paho.Publish) *paho.UserProperties {
+	if msg.Properties == nil {
+		msg.Properties = &paho.PublishProperties{}
 	}
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
+	return &msg.Properties.User
+}
+
+// startPublishSpan starts the span publishing msg, the span context is injected in the message user properties.
+func startPublishSpan(ctx context.Context, tracer trace.Tracer, msg *paho.Publish) (context.Context, trace.Span) {
+	return tracing.StartPublish(ctx, tracer, system, msg.Topic, userPropertiesCarrier{userProperties(msg)},
+		semconv.MessagingMessageBodySize(len(msg.Payload)),
+	)
+}
+
+// startProcessSpan starts the span processing msg, child of the span the message was published with.
+func startProcessSpan(ctx context.Context, tracer trace.Tracer, msg *paho.Publish) (context.Context, trace.Span) {
+	return tracing.StartProcess(ctx, tracer, system, msg.Topic, userPropertiesCarrier{userProperties(msg)},
+		semconv.MessagingMessageBodySize(len(msg.Payload)),
+	)
 }

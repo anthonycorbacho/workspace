@@ -1,12 +1,11 @@
-// Package telemetry provides functions for managing
-// instrumented code and measure data about that code's
-// performance and operation.
+// Package telemetry creates the OpenTelemetry providers of a service, set as the global providers.
 //
-// You can setup instrumentation by creating providers
+//	// Traces exported to the OTLP collector (OTEL_EXPORTER_OTLP_ENDPOINT).
+//	tracer, err := telemetry.NewTracer("myservice")
 //
-//	// Create Tracer.
-//	tracer, _ := telemetry.NewTracer("myservicename")
+//	// Metrics registered in the default prometheus registry.
+//	meter, err := telemetry.NewMeter("myservice")
 //
-//	// Create a Meter.
-//	meter, _ := telemetry.NewMeter("myservicename")
+// The caller shuts down the providers before exiting to flush the pending data. The Foundation (see kit) creates
+// both providers when it serves.
 package telemetry

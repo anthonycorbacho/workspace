@@ -1,4 +1,4 @@
-package blobminio
+package minio
 
 import (
 	"testing"

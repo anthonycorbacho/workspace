@@ -2,29 +2,25 @@ package mqtt
 
 import (
 	"context"
-	"fmt"
 	"sync"
-	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/eclipse/paho.golang/paho"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var _ pubsub.Subscriber = (*Subscriber)(nil)
 
-// Subscriber attaches to a mqtt subscription.
+// Subscriber subscribes to MQTT topics, the messages are received until Close.
 type Subscriber struct {
 	closed    bool
 	closeLock sync.RWMutex
 	client    *Client
 }
 
-// NewSubscriber create a new MQTT subscriber.
+// NewSubscriber creates a MQTT subscriber using client.
 //
-// It required a call to Close in order to stop processing messages.
+// Close must be called to disconnect the client.
 func NewSubscriber(client *Client) (*Subscriber, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
@@ -35,26 +31,30 @@ func NewSubscriber(client *Client) (*Subscriber, error) {
 	}, nil
 }
 
-// Close notifies the Subscriber to stop processing messages, send all the remaining messages and close the connection.
+// Close stops receiving messages and disconnects the client.
 func (s *Subscriber) Close() error {
 	if !s.markClosed() {
 		return nil
 	}
 
-	ctx, fn := context.WithTimeout(context.Background(), 10*time.Second)
-	defer fn()
+	// Close has no context, the disconnection is bounded by disconnectTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), disconnectTimeout)
+	defer cancel()
 	return s.client.Disconnect(ctx)
 }
 
+// Subscribe subscribes to the subscription topic (wildcards are supported).
+//
+// MQTT has no negative acknowledgement: the client acknowledges a message once the handler
+// returned, a message the handler failed to process is not redelivered.
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler pubsub.Handler) error {
-	h := func(ctx context.Context, msg pubsub.Message, metadata map[string]string, ack func(), _ func()) error {
-		// default behavior is to always ack.
-		ack()
-		return handler(ctx, msg, metadata)
-	}
-	return s.SubscribeWithAck(ctx, subscription, h)
+	return s.SubscribeWithAck(ctx, subscription, pubsub.AckOnSuccess(handler))
 }
 
+// SubscribeWithAck subscribes to the subscription topic, ack and nack are no-ops (see Subscribe).
+//
+// ctx bounds the subscribe request, the messages are handled with the values of ctx (eg: logger
+// fields, baggage) until the subscriber is closed.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
 	if s.isClosed() {
 		return pubsub.ErrSubscriberClosed
@@ -64,35 +64,29 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 		return pubsub.ErrNilTopic
 	}
 
+	// the handlers are called until the client is disconnected, not until ctx is done.
+	subCtx := context.WithoutCancel(ctx)
 	s.client.route.RegisterHandler(subscription, func(msg *paho.Publish) {
-		ctx := contextFromTracingAttributes(context.Background(), msg.Properties.User)
-		topic := msg.Properties.User.Get("topic")
+		ctx, span := startProcessSpan(subCtx, tracer, msg)
+		defer span.End()
 
+		topic := msg.Properties.User.Get(topicProperty)
 		if len(topic) == 0 {
 			topic = msg.Topic
 		}
-
-		// Add topic to the context
 		ctx = pubsub.WithTopic(ctx, topic)
-
-		var span trace.Span
-		ctx, span = tracer.Start(ctx, fmt.Sprintf("subscription %s", topic))
-		defer span.End()
-
-		span.SetAttributes(attribute.String("topic", topic))
 
 		// create meta from userProp
 		metadata := map[string]string{}
-		metadata["topic"] = topic
+		metadata[topicProperty] = topic
 		for _, p := range msg.Properties.User {
 			metadata[p.Key] = p.Value
 		}
 
-		// MQTT doest have concept of Ack and Nack.
+		// MQTT has no concept of Ack and Nack, the client acknowledges the message once the handler returned.
 		noop := func() {}
 		if err := handler(ctx, msg.Payload, metadata, noop, noop); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			tracing.RecordError(span, err)
 		}
 	})
 	_, err := s.client.Subscribe(ctx, &paho.Subscribe{

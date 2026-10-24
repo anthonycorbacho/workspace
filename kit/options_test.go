@@ -22,7 +22,7 @@ func TestNewFoundation(t *testing.T) {
 		env     map[string]string
 		options []Option
 		wantErr bool
-		want    FoundationOptions
+		want    options
 		// number of grpc server options
 		wantGrpcOpts int
 	}{
@@ -34,7 +34,7 @@ func TestNewFoundation(t *testing.T) {
 		{
 			name:  "defaults",
 			fname: "test",
-			want: FoundationOptions{
+			want: options{
 				httpAddr:         "0.0.0.0:8080",
 				grpcAddr:         "0.0.0.0:8081",
 				metricsAddr:      ":9090",
@@ -52,7 +52,7 @@ func TestNewFoundation(t *testing.T) {
 				"FOUNDATION_METRICS_ADDRESS": "127.0.0.1:1003",
 				"FOUNDATION_PROBES_ADDRESS":  "127.0.0.1:1004",
 			},
-			want: FoundationOptions{
+			want: options{
 				httpAddr:         "127.0.0.1:1001",
 				grpcAddr:         "127.0.0.1:1002",
 				metricsAddr:      "127.0.0.1:1003",
@@ -72,13 +72,13 @@ func TestNewFoundation(t *testing.T) {
 			},
 			options: []Option{
 				WithHTTPAddr("127.0.0.1:2001"),
-				WithGrpcAddr("127.0.0.1:2002"),
+				WithGRPCAddr("127.0.0.1:2002"),
 				WithMetricsAddr("127.0.0.1:2003"),
 				WithProbesAddr("127.0.0.1:2004"),
 				WithHTTPWriteTimeout(time.Second),
 				WithHTTPReadTimeout(2 * time.Second),
 			},
-			want: FoundationOptions{
+			want: options{
 				httpAddr:         "127.0.0.1:2001",
 				grpcAddr:         "127.0.0.1:2002",
 				metricsAddr:      "127.0.0.1:2003",
@@ -91,20 +91,18 @@ func TestNewFoundation(t *testing.T) {
 			name:  "cors, logger and grpc server options",
 			fname: "test",
 			options: []Option{
-				EnableCors(),
-				WithCorsOptions(cors.Options{AllowedOrigins: []string{"https://example.com"}}),
+				WithCORS(cors.Options{AllowedOrigins: []string{"https://example.com"}}),
 				WithLogger(logger),
-				WithGrpcServerOptions(grpc.MaxRecvMsgSize(1024), grpc.MaxSendMsgSize(1024)),
+				WithGRPCServerOptions(grpc.MaxRecvMsgSize(1024), grpc.MaxSendMsgSize(1024)),
 			},
-			want: FoundationOptions{
+			want: options{
 				httpAddr:         "0.0.0.0:8080",
 				grpcAddr:         "0.0.0.0:8081",
 				metricsAddr:      ":9090",
 				probesAddr:       ":9091",
 				httpWriteTimeout: 15 * time.Second,
 				httpReadTimeout:  15 * time.Second,
-				enableCors:       true,
-				corsOpts:         cors.Options{AllowedOrigins: []string{"https://example.com"}},
+				cors:             &cors.Options{AllowedOrigins: []string{"https://example.com"}},
 				logger:           logger,
 			},
 			wantGrpcOpts: 2,
@@ -129,8 +127,7 @@ func TestNewFoundation(t *testing.T) {
 			assert.Equal(t, tt.want.probesAddr, f.opts.probesAddr)
 			assert.Equal(t, tt.want.httpWriteTimeout, f.opts.httpWriteTimeout)
 			assert.Equal(t, tt.want.httpReadTimeout, f.opts.httpReadTimeout)
-			assert.Equal(t, tt.want.enableCors, f.opts.enableCors)
-			assert.Equal(t, tt.want.corsOpts.AllowedOrigins, f.opts.corsOpts.AllowedOrigins)
+			assert.Equal(t, tt.want.cors, f.opts.cors)
 			assert.Len(t, f.opts.grpcServerOpts, tt.wantGrpcOpts)
 			require.NotNil(t, f.logger, "a logger is always set")
 			if tt.want.logger != nil {
@@ -198,7 +195,7 @@ func TestCors(t *testing.T) {
 	}{
 		{
 			name:    "preflight from allowed origin",
-			options: []Option{EnableCors(), WithCorsOptions(corsOpts)},
+			options: []Option{WithCORS(corsOpts)},
 			method:  http.MethodOptions,
 			headers: map[string]string{
 				"Origin":                         "https://allowed.example.com",
@@ -212,7 +209,7 @@ func TestCors(t *testing.T) {
 		},
 		{
 			name:    "preflight from disallowed origin",
-			options: []Option{EnableCors(), WithCorsOptions(corsOpts)},
+			options: []Option{WithCORS(corsOpts)},
 			method:  http.MethodOptions,
 			headers: map[string]string{
 				"Origin":                        "https://evil.example.com",
@@ -222,7 +219,7 @@ func TestCors(t *testing.T) {
 		},
 		{
 			name:    "preflight with disallowed method",
-			options: []Option{EnableCors(), WithCorsOptions(corsOpts)},
+			options: []Option{WithCORS(corsOpts)},
 			method:  http.MethodOptions,
 			headers: map[string]string{
 				"Origin":                        "https://allowed.example.com",
@@ -232,7 +229,7 @@ func TestCors(t *testing.T) {
 		},
 		{
 			name:    "simple request from allowed origin",
-			options: []Option{EnableCors(), WithCorsOptions(corsOpts)},
+			options: []Option{WithCORS(corsOpts)},
 			method:  http.MethodGet,
 			headers: map[string]string{
 				"Origin": "https://allowed.example.com",
@@ -242,7 +239,7 @@ func TestCors(t *testing.T) {
 		},
 		{
 			name:    "cors disabled",
-			options: []Option{WithCorsOptions(corsOpts)},
+			options: []Option{},
 			method:  http.MethodGet,
 			headers: map[string]string{
 				"Origin": "https://allowed.example.com",

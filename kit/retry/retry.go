@@ -25,7 +25,7 @@ func Retry(ctx context.Context, o Operation, b BackOff) error {
 	return doRetry(ctx, o, b, nil)
 }
 
-func doRetry(ctx context.Context, operation Operation, b BackOff, t Timer) error {
+func doRetry(ctx context.Context, operation Operation, b BackOff, t timer) error {
 	if t == nil {
 		t = &defaultTimer{}
 	}

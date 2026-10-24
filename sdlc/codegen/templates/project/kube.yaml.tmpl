@@ -55,8 +55,8 @@ spec:
           imagePullPolicy: IfNotPresent
           name: {{ .Project }}
           env:
-            - name: OTL_ENDPOINT
-              value: alloy.monitoring.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://alloy.monitoring.svc.cluster.local:4317
             - name: POD_NAME
               valueFrom:
                 fieldRef:

@@ -13,9 +13,9 @@
 //
 // # Adding context to an error
 //
-// The errors.Wrap function returns a new error that adds context to the
-// original error by recording a stack trace at the point Wrap is called,
-// together with the supplied message. For example
+// The errors.Wrap function returns a new error that prefixes the original error
+// with the supplied message, the original error stays in the chain (errors.Is, errors.As).
+// For example
 //
 //	_, err := io.ReadAll(r)
 //	if err != nil {
@@ -24,9 +24,10 @@
 //
 // # Coded errors
 //
-// A coded error (see Error) is an error with a unique code, a gRPC status and a client facing message,
+// A coded error (see Error) is an error with a unique code, a Kind and a client facing message,
 // defined in errors.defs.yaml. Its constructor is generated in error.gen.go and its documentation in docs/
-// by running `make errgen` (go generate).
+// by running `make errgen` (go generate). The transports map the Kind to their own status
+// (eg: kit/grpc to a gRPC code).
 package errors
 
 //go:generate go run ../../sdlc/errgen -input errors.defs.yaml -output error.gen.go -docs docs

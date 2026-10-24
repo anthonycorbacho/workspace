@@ -11,6 +11,7 @@ import (
 	kitConfig "github.com/anthonycorbacho/workspace/kit/config"
 	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
@@ -22,7 +23,7 @@ type mqttTestSuite struct {
 	testURL string
 }
 
-func TestMqttTestSuite(t *testing.T) {
+func TestMQTTTestSuite(t *testing.T) {
 	suite.Run(t, new(mqttTestSuite))
 }
 
@@ -31,17 +32,19 @@ func (m *mqttTestSuite) SetupSuite() {
 		m.T().Skip("No testing mqtt setup via env variable TESTINGMQTT_URL")
 	}
 	m.testURL = kitConfig.LookupEnv("TESTINGMQTT_URL", "mqtt://127.0.0.1:1883")
+	// the trace context is propagated with the global propagator, set by kit/telemetry.
+	tracingtest.UsePropagator(m.T())
 }
 
 func (m *mqttTestSuite) TestClient() {
-	clientId := fmt.Sprintf("test-client-%s", id.New())
-	c, err := NewClient(m.testURL, clientId)
+	clientID := fmt.Sprintf("test-client-%s", id.New())
+	c, err := NewClient(context.Background(), m.testURL, clientID)
 	m.NoError(err)
 	defer c.Disconnect(context.Background())
 
 	// Try to publish to make sure we dont get any error.
 	_, err = c.Publish(context.Background(), &paho.Publish{
-		Topic:   clientId,
+		Topic:   clientID,
 		Payload: []byte("whatever."),
 	})
 
@@ -49,8 +52,8 @@ func (m *mqttTestSuite) TestClient() {
 }
 
 func (m *mqttTestSuite) TestPublishAndSubscribe() {
-	clientId := fmt.Sprintf("test-client-%s", id.New())
-	c, err := NewClient(m.testURL, clientId)
+	clientID := fmt.Sprintf("test-client-%s", id.New())
+	c, err := NewClient(context.Background(), m.testURL, clientID)
 	m.NoError(err)
 	defer c.Disconnect(context.Background())
 
@@ -70,12 +73,12 @@ func (m *mqttTestSuite) TestPublishAndSubscribe() {
 		return nil
 	}
 
-	err = subscriber.Subscribe(context.Background(), clientId, fn)
+	err = subscriber.Subscribe(context.Background(), clientID, fn)
 	m.NoError(err)
 
 	err = publisher.Publish(
 		context.Background(),
-		clientId,
+		clientID,
 		[]byte("a message"),
 		pubsub.WithQoS(0),
 		pubsub.WithAttributes(map[string]string{"attb1": "value"}),
@@ -92,7 +95,7 @@ func (m *mqttTestSuite) TestPublishAndSubscribe() {
 }
 
 func (m *mqttTestSuite) TestConcurrentClose() {
-	c, err := NewClient(m.testURL, fmt.Sprintf("test-client-%s", id.New()))
+	c, err := NewClient(context.Background(), m.testURL, fmt.Sprintf("test-client-%s", id.New()))
 	m.Require().NoError(err)
 	subscriber, err := NewSubscriber(c)
 	m.Require().NoError(err)
@@ -108,7 +111,7 @@ func (m *mqttTestSuite) TestConcurrentClose() {
 }
 
 func (m *mqttTestSuite) newClient() *Client {
-	c, err := NewClient(m.testURL, fmt.Sprintf("test-client-%s", id.New()))
+	c, err := NewClient(context.Background(), m.testURL, fmt.Sprintf("test-client-%s", id.New()))
 	m.Require().NoError(err)
 	m.T().Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -147,7 +150,7 @@ func (m *mqttTestSuite) TestPublishQoS() {
 
 			ch := make(chan mqttReceived, 1)
 			err = s.Subscribe(context.Background(), topic, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
-				ch <- mqttReceived{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx)}
+				ch <- mqttReceived{msg: msg.String(), metadata: metadata, topic: pubsub.Topic(ctx)}
 				return nil
 			})
 			m.Require().NoError(err)
@@ -192,7 +195,7 @@ func (m *mqttTestSuite) TestTracePropagation() {
 
 	select {
 	case r := <-ch:
-		m.Equal(sc.TraceID().String(), r.metadata["trace"])
+		m.Contains(r.metadata["traceparent"], sc.TraceID().String())
 		m.Equal(sc.TraceID(), r.traceID)
 	case <-time.After(10 * time.Second):
 		m.FailNow("timeout waiting for message")
@@ -209,7 +212,7 @@ func (m *mqttTestSuite) TestWildcardSubscription() {
 
 	ch := make(chan mqttReceived, 2)
 	err = s.Subscribe(context.Background(), prefix+"/+", func(ctx context.Context, msg pubsub.Message, _ map[string]string) error {
-		ch <- mqttReceived{msg: msg.String(), topic: pubsub.GetTopic(ctx)}
+		ch <- mqttReceived{msg: msg.String(), topic: pubsub.Topic(ctx)}
 		return nil
 	})
 	m.Require().NoError(err)
@@ -239,7 +242,7 @@ func (m *mqttTestSuite) TestSubscribeRawMessage() {
 
 	ch := make(chan mqttReceived, 1)
 	err = s.Subscribe(context.Background(), topic, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
-		ch <- mqttReceived{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx)}
+		ch <- mqttReceived{msg: msg.String(), metadata: metadata, topic: pubsub.Topic(ctx)}
 		return nil
 	})
 	m.Require().NoError(err)
@@ -323,6 +326,65 @@ func (m *mqttTestSuite) TestHandlerErrorKeepsSubscription() {
 	m.ElementsMatch([]string{"first", "second"}, got)
 }
 
+// TestSubscribeHandlerError checks that Subscribe does not redeliver a message the handler failed
+// to process, MQTT having no negative acknowledgement.
+func (m *mqttTestSuite) TestSubscribeHandlerError() {
+	tests := []struct {
+		name    string
+		failing bool
+	}{
+		{name: "handled message"},
+		{name: "failed message is not redelivered", failing: true},
+	}
+	for _, tt := range tests {
+		m.Run(tt.name, func() {
+			topic := fmt.Sprintf("kit/suberr/%s", id.New())
+			c := m.newClient()
+			p, err := NewPublisher(c)
+			m.Require().NoError(err)
+			s, err := NewSubscriber(c)
+			m.Require().NoError(err)
+
+			var mu sync.Mutex
+			deliveries := map[string]int{}
+			handled := make(chan string, 10)
+			err = s.Subscribe(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+				mu.Lock()
+				deliveries[msg.String()]++
+				mu.Unlock()
+				select {
+				case handled <- msg.String():
+				default:
+				}
+				if tt.failing {
+					return fmt.Errorf("handler failed for %s", msg)
+				}
+				return nil
+			})
+			m.Require().NoError(err)
+
+			m.Require().NoError(p.Publish(context.Background(), topic, []byte("first"), pubsub.WithQoS(1)))
+			m.Require().NoError(p.Publish(context.Background(), topic, []byte("second"), pubsub.WithQoS(1)))
+
+			got := []string{}
+			for range 2 {
+				select {
+				case msg := <-handled:
+					got = append(got, msg)
+				case <-time.After(10 * time.Second):
+					m.FailNow("timeout waiting for messages")
+				}
+			}
+			m.ElementsMatch([]string{"first", "second"}, got)
+
+			time.Sleep(time.Second)
+			mu.Lock()
+			defer mu.Unlock()
+			m.Equal(map[string]int{"first": 1, "second": 1}, deliveries)
+		})
+	}
+}
+
 func (m *mqttTestSuite) TestClosedStates() {
 	topic := fmt.Sprintf("kit/closed/%s", id.New())
 	noop := func(context.Context, pubsub.Message, map[string]string) error { return nil }
@@ -351,8 +413,8 @@ func (m *mqttTestSuite) TestPublishDisconnectedClient() {
 }
 
 func (m *mqttTestSuite) TestClientWithOptions() {
-	c, err := NewClient(m.testURL, fmt.Sprintf("test-client-%s", id.New()),
-		WithUser("user"), WithPassword("password"), WithKeepAlive(10), WithRetry(time.Second), EnableRetained())
+	c, err := NewClient(context.Background(), m.testURL, fmt.Sprintf("test-client-%s", id.New()),
+		WithUser("user"), WithPassword("password"), WithKeepAlive(10), WithRetry(time.Second))
 	m.Require().NoError(err)
 	m.NoError(c.Disconnect(context.Background()))
 }

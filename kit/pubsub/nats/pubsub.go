@@ -2,80 +2,64 @@ package nats
 
 import (
 	"context"
-	"strconv"
 
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// tracer represents a NATS pubsub tracer
+// subjectHeader is the header holding the subject a message is published to.
+const subjectHeader = "subject"
+
+// tracer is the tracer of the NATS publishers and subscribers.
 var tracer = otel.Tracer("kit/pubsub/nats")
 
-func tracingAttributes(span trace.Span, m map[string][]string) {
+// system is the messaging.system attribute of the NATS spans.
+var system = semconv.MessagingSystemKey.String("nats")
 
-	m["trace"] = []string{span.SpanContext().TraceID().String()}
-	m["span"] = []string{span.SpanContext().SpanID().String()}
-	m["trace-state"] = []string{span.SpanContext().TraceState().String()}
-	m["trace-remote"] = []string{strconv.FormatBool(span.SpanContext().IsRemote())}
-	m["trace-sampled"] = []string{strconv.FormatBool(span.SpanContext().IsSampled())}
+// headerCarrier adapts the headers of a NATS message to propagation.TextMapCarrier.
+//
+// propagation.HeaderCarrier is not used as it canonicalizes the keys (eg: Traceparent) like
+// http.Header while the NATS headers are case-sensitive, the keys are kept as is (eg: traceparent).
+type headerCarrier nats.Header
+
+var _ propagation.TextMapCarrier = headerCarrier{}
+
+// Get returns the first value of key.
+func (c headerCarrier) Get(key string) string {
+	return nats.Header(c).Get(key)
 }
 
-func contextFromTracingAttributes(ctx context.Context, m map[string]string) context.Context {
-	traceID, err := trace.TraceIDFromHex(m["trace"])
-	if err != nil {
-		return ctx
-	}
-	spanID, err := trace.SpanIDFromHex(m["span"])
-	if err != nil {
-		return ctx
-	}
-
-	stats, err := trace.ParseTraceState(m["trace-state"])
-	if err != nil {
-		return ctx
-	}
-
-	remote, err := strconv.ParseBool(m["trace-remote"])
-	if err != nil {
-		return ctx
-	}
-
-	// the flag is written with strconv.FormatBool, a missing flag (eg: message published
-	// by an older version) is considered not sampled.
-	sampled := m["trace-sampled"] == "true"
-
-	scc := trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceState: stats,
-		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
-		Remote:     remote,
-	}
-
-	sc := trace.NewSpanContext(scc)
-	if !sc.IsValid() {
-		return ctx
-	}
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
+// Set sets the value of key, replacing its values.
+func (c headerCarrier) Set(key, value string) {
+	nats.Header(c).Set(key, value)
 }
 
-// New returns JetStream context, nats connection and an error.
-// Since we are most likely to only be using JetStream,
-// there is no need to separate the initialization of NatsConn and JetStream
-func New(url string, options ...func(*nats.Conn)) (nats.JetStreamContext, *nats.Conn, error) {
-	nc, err := nats.Connect(url)
-	if err != nil {
-		return nil, nil, err
+// Keys returns the keys of the headers.
+func (c headerCarrier) Keys() []string {
+	keys := make([]string, 0, len(c))
+	for k := range c {
+		keys = append(keys, k)
 	}
-	for _, option := range options {
-		option(nc)
+	return keys
+}
+
+// startPublishSpan starts the span publishing msg, the span context is injected in the message headers.
+func startPublishSpan(ctx context.Context, tracer trace.Tracer, msg *nats.Msg) (context.Context, trace.Span) {
+	if msg.Header == nil {
+		msg.Header = nats.Header{}
 	}
-	// Create JetStream Context
-	js, err := nc.JetStream(nats.PublishAsyncMaxPending(256))
-	if err != nil {
-		nc.Close()
-		return nil, nil, err
-	}
-	return js, nc, nil
+	return tracing.StartPublish(ctx, tracer, system, msg.Subject, headerCarrier(msg.Header),
+		semconv.MessagingMessageBodySize(len(msg.Data)),
+	)
+}
+
+// startProcessSpan starts the span processing msg, child of the span the message was published with.
+func startProcessSpan(ctx context.Context, tracer trace.Tracer, msg *nats.Msg) (context.Context, trace.Span) {
+	return tracing.StartProcess(ctx, tracer, system, msg.Subject, headerCarrier(msg.Header),
+		semconv.MessagingMessageBodySize(len(msg.Data)),
+	)
 }

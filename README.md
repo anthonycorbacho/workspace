@@ -4,8 +4,8 @@
 
 **Workspace** is a Mono-repository template for building and deploying distributed applications.
 
-Workspace aim to unify and structure your Go applications and deployment model. It comes with a [Kit framework](kit) for production ready Go application.
-It also comes with a set a tools for managing and working with the infrastructure, the base model relies on Kubernetes via Kustomize and overlays. Workspace can run on your laptop for ease of development and can be deployed to any cloud providers.
+Workspace aims to unify and structure your Go applications and their deployment model. It comes with a [Kit framework](kit) for production ready Go applications.
+It also comes with a set of tools for managing and working with the infrastructure, the base model relies on Kubernetes via Kustomize and overlays. Workspace runs on your laptop for ease of development and can be deployed to any cloud provider.
 
 ## Contents
 - [Why?](#why)
@@ -15,7 +15,7 @@ It also comes with a set a tools for managing and working with the infrastructur
 - [CI/CD](#cicd)
 
 ## Why?
-Mono repo is a model that aims to group a set of services, tool, and deployment into a single repository, by doing so you can have this benefit “out of the box”;
+Mono repo is a model that aims to group a set of services, tools, and deployments into a single repository, by doing so you get these benefits “out of the box”:
 
  - Unify versioning, one source of truth
  - Atomic change
@@ -23,7 +23,7 @@ Mono repo is a model that aims to group a set of services, tool, and deployment 
  - Enforced tooling (linter, build, code search, etc)
  - Extensive code sharing and reuse
  - Simplified dependency management
- - Large-scale refactoring. codebase modernization
+ - Large-scale refactoring, codebase modernization
  - Collaboration across teams
  - Flexible team boundaries and code ownership
  - Code visibility and clear tree structure providing implicit team namespacing
@@ -51,7 +51,8 @@ workspace/
 │   ├── codegen                   # Scaffold a new project (make codegen)
 │   ├── documentation             # Decisions and guidelines
 │   ├── errgen                    # Generate the coded errors (make errgen)
-│   └── onboarding                # Check the required tools (make onboarding)
+│   ├── onboarding                # Check the required tools (make onboarding)
+│   └── scripts                   # Rename the template module (make rename)
 ├── overlays                      # Represent a deployment mode (local, staging, production)
 │   ├── local                     # Namespaces deployed locally
 │   └── local-foundation          # Local dependencies (monitoring stack)
@@ -59,45 +60,52 @@ workspace/
 ├── .ko.yaml                      # Ko build settings
 ├── LICENSE                       # Workspace licensing
 ├── Makefile                      # Simple Makefile for short-cut. run command `make help`
-└── golangci.yml                  #  List of linting rules
+└── golangci.yml                  # List of linting rules
 ```
 
 ### Observability
-Workspace is built with observability at heat. Kit integrate with OpenTelemetry and local overlays set up the basic Loki, Grafana, Tempo, Prometheus stack.
-All tracing, login and monitoring endpoint and setting are preset via Kit framework.
+Workspace is built with observability at heart. The Kit integrates with OpenTelemetry and Prometheus, and the
+[local-foundation overlay](overlays/local-foundation) deploys the Grafana LGTM stack: Alloy (collector), Loki (logs),
+Tempo (traces), Prometheus (metrics) and Pyroscope (profiles).
+The tracing, logging and metrics of a service built with the Kit (`kit.Foundation`) are set up out of the box: one
+trace follows a request from the HTTP gateway to the gRPC handler and its downstream calls.
 
 ## Documentation
-In order to have more context on the decision and guidelines, you can refer to the [documentation folder](sdlc/documentation/README.md).
+In order to have more context on the decisions and guidelines, you can refer to the [documentation folder](sdlc/documentation/README.md).
 
 ## Requirements
-You need to have Go installed in your system.
-The minimal version of Go is `1.27`
+Run `make onboarding` to check the required tools are installed.
 
-You can run `make onboarding` to see if you have required tools missing.
-
-- [Rancher-desktop](https://docs.rancherdesktop.io/getting-started/installation/) or [Docker-desktop](https://www.docker.com/products/docker-desktop/)
-- [Go](https://go.dev/dl/) `brew install go`
-- [ko](https://github.com/google/ko) `brew install ko`
-- [helm](https://helm.sh/docs/intro/install/) `brew install helm`
-- [vendir](https://carvel.dev/vendir/docs/latest/install/) `brew tap carvel-dev/carvel; brew install vendir` (only to update the vendored helm charts)
+- [Go](https://go.dev/dl/) `1.27` or newer, `brew install go`
+- [Docker](https://www.docker.com/products/docker-desktop/) (or [Rancher Desktop](https://docs.rancherdesktop.io/getting-started/installation/)) with Docker Compose and a local Kubernetes cluster
+- [kubectl](https://kubernetes.io/docs/tasks/tools/) `brew install kubectl`
+- [helm](https://helm.sh/docs/intro/install/) `brew install helm`, used by kustomize to render the monitoring charts
 - [Tilt](https://tilt.dev/) `brew install tilt`
-- [Buf](https://buf.build/docs/installation) `brew install buf`, the protoc plugins are pinned in `go.mod` (`tool` directive) and run with `go tool`, no install needed.
+- [ko](https://github.com/ko-build/ko) `brew install ko`
+- [Buf](https://buf.build/docs/installation) `brew install buf`, the protoc plugins are pinned in `go.mod` (`tool` directive) and run with `go tool`, no install needed
 - [golangci-lint](https://github.com/golangci/golangci-lint) `brew install golangci-lint`
-- [kubeseal](https://github.com/bitnami-labs/sealed-secrets) `brew install kubeseal`
-- [mockery](https://github.com/vektra/mockery) `brew install mockery`
+
+Optional tools:
+- [vendir](https://carvel.dev/vendir/docs/latest/install/) `brew tap carvel-dev/carvel; brew install vendir`, to update the vendored helm charts
+- [mockery](https://github.com/vektra/mockery) `brew install mockery`, to regenerate the mocks
 
 ## Installation and usage
 This workspace is built using ko, Tilt and Go modules.
 
 ```bash
-# First fork or clone the repository
+# Create a repository from this template, or clone it
 git clone git@github.com:anthonycorbacho/workspace.git
+cd workspace
 
-# you can run the whole project on your local kubernetes (via docker desktop or rancher desktop)
+# Rename the Go module (go.mod, imports, protos, CODEOWNERS...)
+make rename MODULE=github.com/acme/platform
+
+# Run the whole project on your local kubernetes (docker desktop or rancher desktop)
 tilt up
 ```
 
-Workspace comes with a [simple app](sample/sampleapp) that illustrate how to use this framework.
+Workspace comes with a [sample app](sample/sampleapp) that illustrates how to use the framework, `make help` lists the
+development commands (lint, tests, code generation...).
 
 ### Create a new service
 `make codegen` scaffolds a new project in a namespace (kubernetes files, minimal main, Tiltfile and CI workflows),
@@ -107,20 +115,38 @@ see [sdlc/README.md](sdlc/README.md#codegen).
 make codegen ARGS="-namespace sample -project billing"
 ```
 
-### Accessible Dashboard
- - Tilt dashboard http://localhost:10350/
- - Grafana dashboard http://localhost:8090/?orgId=1
+### Ports
+A service built with the Kit listens on:
+
+| Port | Purpose                                   | Environment variable          |
+|------|-------------------------------------------|-------------------------------|
+| 8080 | HTTP: grpc-gateway and custom handlers    | `FOUNDATION_HTTP_ADDRESS`     |
+| 8081 | gRPC                                      | `FOUNDATION_GRPC_ADDRESS`     |
+| 9090 | Prometheus metrics (`/metrics`)           | `FOUNDATION_METRICS_ADDRESS`  |
+| 9091 | Kubernetes probes (`/healthz`, `/readyz`) | `FOUNDATION_PROBES_ADDRESS`   |
+
+Locally, Tilt forwards:
+
+| URL                    | Purpose                                         |
+|------------------------|-------------------------------------------------|
+| http://localhost:10350 | Tilt dashboard                                  |
+| http://localhost:8090  | Grafana (logs, traces, metrics and profiles)    |
+| http://localhost:8091  | Alloy UI                                        |
+| http://localhost:8010  | sample/sampleapp HTTP API                       |
+| http://localhost:8011  | sample/sampleapp metrics                        |
 
 ## CI/CD
-GitHub Actions are used to check codestyle via golangci (you can check golangci.yml for more details).
+GitHub Actions check every pull request: golangci-lint (see `golangci.yml`), `go.mod` and `vendor` are up to date,
+`buf lint` and `buf breaking`, the generated code (protos, coded errors) is up to date, and the tests of the changed
+projects run (the kit tests run with their services started by docker compose).
 
 ### CI
-We are using GitHub actions for building the OCI images and push it to the OCI repository.
-The pipeline is trigger once a Pull Request is merged into the main branch.
+The OCI images are built with ko and pushed once a pull request is merged into the main branch, tagged `latest` and
+with the commit SHA.
 
-By default, the push will happen on the [default GitHub Package](https://github.com/anthonycorbacho?tab=packages). You can choose to override where you want your image to be pushed.
+By default, the images are pushed to the [GitHub Packages](https://github.com/anthonycorbacho?tab=packages) of the
+repository owner, see `.github/workflows/ko-builder.yaml` to push them somewhere else.
 
 ### CD
-It is strongly recommended to set up ArgoCD for managing the deployment.
-
-TODO: document/argoCD 
+The deployment is not part of the template: the overlays can be applied by any GitOps tool, eg:
+[Argo CD](https://argo-cd.readthedocs.io/) or [Flux](https://fluxcd.io/), with one overlay per environment.

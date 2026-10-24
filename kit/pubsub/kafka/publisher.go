@@ -2,17 +2,22 @@ package kafka
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 var _ pubsub.Publisher = (*Publisher)(nil)
+
+const (
+	// publishTimeout is the maximum duration of a publish, unless the context is done before.
+	publishTimeout = 5 * time.Second
+	// closeTimeout is the maximum duration of the flush of the pending records on Close.
+	closeTimeout = 10 * time.Second
+)
 
 // Publisher publishes a message on a Kafka topic.
 type Publisher struct {
@@ -21,9 +26,9 @@ type Publisher struct {
 	client    *Client
 }
 
-// NewPublisher creates a new Kafka publisher.
+// NewPublisher creates a Kafka publisher using client.
 //
-// It requires a call to Close in order to stop processing messages.
+// Close must be called to flush the pending records and close the client.
 func NewPublisher(client *Client) (*Publisher, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
@@ -34,7 +39,7 @@ func NewPublisher(client *Client) (*Publisher, error) {
 	}, nil
 }
 
-// Close notifies the Publisher to stop processing messages, send all the remaining messages and close the connection.
+// Close stops publishing, flushes the pending records and closes the client.
 func (p *Publisher) Close() error {
 	p.closeLock.Lock()
 	if p.closed {
@@ -44,12 +49,13 @@ func (p *Publisher) Close() error {
 	p.closed = true
 	p.closeLock.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Close has no context, the flush is bounded by closeTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
 
-	p.client.client.Flush(ctx)
+	err := p.client.client.Flush(ctx)
 	p.client.Close()
-	return nil
+	return err
 }
 
 // Publish publishes a message on a Kafka topic.
@@ -67,43 +73,36 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 		o(options)
 	}
 
-	ctx, span := tracer.Start(ctx, fmt.Sprintf("Publish %s", topic))
-	span.SetAttributes(attribute.String("topic", topic))
-	defer span.End()
-
-	if p.isClose() {
-		err := pubsub.ErrPublisherClosed
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return err
-	}
-
-	// Prepare headers with tracing and custom attributes
-	headers := []kgo.RecordHeader{}
-	headers = tracingAttributes(span, headers)
-
+	// the trace context is injected in the headers, it can't be overridden by the attributes of the options.
+	headers := make([]kgo.RecordHeader, 0, len(options.Attributes)+3)
 	for k, v := range options.Attributes {
-		headers = append(headers, kgo.RecordHeader{
-			Key:   k,
-			Value: []byte(v),
-		})
+		headers = append(headers, kgo.RecordHeader{Key: k, Value: []byte(v)})
 	}
-
 	record := &kgo.Record{
-		Key:     []byte(options.Key),
 		Topic:   topic,
 		Value:   msg,
 		Headers: headers,
 	}
+	// a nil key lets the partitioner spread the messages, an empty key would send them all to the same partition.
+	if options.Key != "" {
+		record.Key = []byte(options.Key)
+	}
+	ctx, span := startPublishSpan(ctx, tracer, record)
+	defer span.End()
+
+	if p.isClose() {
+		err := pubsub.ErrPublisherClosed
+		tracing.RecordError(span, err)
+		return err
+	}
 
 	// timeout for the publisher to give up and attempt to publish the message
-	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, publishTimeout)
 	defer cancel()
 
 	results := p.client.client.ProduceSync(timeoutCtx, record)
 	if err := results.FirstErr(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		tracing.RecordError(span, err)
 		return err
 	}
 

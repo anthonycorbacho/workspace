@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -15,89 +16,35 @@ import (
 // unreachableBroker is never dialed by the unit tests, kgo connects lazily.
 const unreachableBroker = "127.0.0.1:1"
 
-func testSpanContext(t *testing.T, sampled bool) trace.SpanContext {
-	t.Helper()
-	traceID, err := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
-	require.NoError(t, err)
-	spanID, err := trace.SpanIDFromHex("0102030405060708")
-	require.NoError(t, err)
-	state, err := trace.ParseTraceState("vendor=value")
-	require.NoError(t, err)
-	return trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceState: state,
-		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
-	})
+func TestTracePropagation(t *testing.T) {
+	rec := tracingtest.NewRecorder(t)
+	record := &kgo.Record{
+		Topic:   "orders",
+		Key:     []byte("key"),
+		Value:   []byte("hello"),
+		Headers: []kgo.RecordHeader{{Key: "custom", Value: []byte("v")}, {Key: "traceparent", Value: []byte("overridden")}},
+	}
+
+	_, publish := startPublishSpan(context.Background(), rec.Tracer(), record)
+	publish.End()
+	require.Len(t, record.Headers, 2, "the trace context replaces the traceparent header")
+	assert.Equal(t, kgo.RecordHeader{Key: "custom", Value: []byte("v")}, record.Headers[0])
+
+	ctx, process := startProcessSpan(context.Background(), rec.Tracer(), record)
+	process.End()
+	assert.Equal(t, process.SpanContext(), trace.SpanContextFromContext(ctx))
+	rec.AssertPropagated(t, "orders", process)
 }
 
-func TestTracingAttributesRoundTrip(t *testing.T) {
-	tests := []struct {
-		name    string
-		sampled bool
-	}{
-		{name: "sampled", sampled: true},
-		{name: "not sampled", sampled: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sc := testSpanContext(t, tt.sampled)
-			span := trace.SpanFromContext(trace.ContextWithSpanContext(context.Background(), sc))
-
-			existing := kgo.RecordHeader{Key: "custom", Value: []byte("v")}
-			headers := tracingAttributes(span, []kgo.RecordHeader{existing})
-			require.Len(t, headers, 6)
-			assert.Equal(t, existing, headers[0])
-
-			got := trace.SpanContextFromContext(contextFromTracingAttributes(context.Background(), headers))
-			require.True(t, got.IsValid())
-			assert.True(t, got.IsRemote())
-			assert.Equal(t, sc.TraceID(), got.TraceID())
-			assert.Equal(t, sc.SpanID(), got.SpanID())
-			assert.Equal(t, sc.TraceState().String(), got.TraceState().String())
-			assert.Equal(t, tt.sampled, got.IsSampled())
-		})
-	}
-}
-
-func TestContextFromTracingAttributesInvalid(t *testing.T) {
-	valid := map[string]string{
-		"trace":         "0102030405060708090a0b0c0d0e0f10",
-		"span":          "0102030405060708",
-		"trace-state":   "",
-		"trace-remote":  "false",
-		"trace-sampled": "true",
-	}
-	with := func(k, v string) []kgo.RecordHeader {
-		var h []kgo.RecordHeader
-		for key, val := range valid {
-			if key == k {
-				val = v
-			}
-			h = append(h, kgo.RecordHeader{Key: key, Value: []byte(val)})
-		}
-		return h
-	}
-	tests := []struct {
-		name    string
-		headers []kgo.RecordHeader
-	}{
-		{name: "nil", headers: nil},
-		{name: "invalid trace id", headers: with("trace", "not-hex")},
-		{name: "zero trace id", headers: with("trace", "00000000000000000000000000000000")},
-		{name: "invalid span id", headers: with("span", "xyz")},
-		{name: "invalid trace state", headers: with("trace-state", "no equal sign")},
-		{name: "invalid remote flag", headers: with("trace-remote", "maybe")},
-		{name: "invalid sampled flag", headers: with("trace-sampled", "maybe")},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), struct{}{}, "marker")
-			got := contextFromTracingAttributes(ctx, tt.headers)
-			assert.Equal(t, ctx, got)
-			assert.False(t, trace.SpanContextFromContext(got).IsValid())
-		})
-	}
+func TestRecordCarrier(t *testing.T) {
+	record := &kgo.Record{Headers: []kgo.RecordHeader{{Key: "k", Value: []byte("a")}, {Key: "k", Value: []byte("b")}}}
+	c := recordCarrier{record}
+	assert.Equal(t, "a", c.Get("k"))
+	assert.Equal(t, "", c.Get("missing"))
+	c.Set("k", "c")
+	c.Set("other", "d")
+	assert.Equal(t, []kgo.RecordHeader{{Key: "k", Value: []byte("c")}, {Key: "other", Value: []byte("d")}}, record.Headers)
+	assert.Equal(t, []string{"k", "other"}, c.Keys())
 }
 
 func TestNewClient(t *testing.T) {
@@ -244,8 +191,27 @@ func TestResolveHandlerForTopic(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.NoError(t, h(context.Background(), nil, nil, func() {}, func() {}))
+			require.NoError(t, h.handler(h.ctx, nil, nil, func() {}, func() {}))
 			assert.Equal(t, tt.want, called)
 		})
 	}
+}
+
+func TestSubscriptionContext(t *testing.T) {
+	c, err := NewClient([]string{unreachableBroker})
+	require.NoError(t, err)
+	s, err := NewSubscriber(c)
+	require.NoError(t, err)
+	defer s.Close()
+
+	type key struct{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
+	noop := func(context.Context, pubsub.Message, map[string]string, func(), func()) error { return nil }
+	require.NoError(t, s.SubscribeWithAck(ctx, "orders", noop))
+	cancel()
+
+	sub, err := s.resolveHandlerForTopic("orders")
+	require.NoError(t, err)
+	assert.Equal(t, "value", sub.ctx.Value(key{}), "the records are handled with the subscription context values")
+	assert.NoError(t, sub.ctx.Err(), "the subscription lasts until Close")
 }

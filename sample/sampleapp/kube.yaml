@@ -8,10 +8,14 @@ spec:
   selector:
     app: sampleapp
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: 8080
-      targetPort: 8080
-      name: http
+      targetPort: http
+    - name: grpc
+      protocol: TCP
+      port: 8081
+      targetPort: grpc
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -35,32 +39,36 @@ spec:
       labels:
         app: sampleapp
       annotations:
-        sidecar.istio.io/inject: "true"
-        prometheus.io.scrape: "true"
-        prometheus.io.path: "/metrics"
-        prometheus.io.port: "9090"
+        # metrics scraped by prometheus.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9090"
+        # profiles scraped by alloy (pprof on the probes port).
+        pyroscope.io/scrape: "true"
         pyroscope.io/application-name: sample.sampleapp
         pyroscope.io/port: "9091"
-        pyroscope.io/profile-cpu-enabled: "true"
-        pyroscope.io/profile-mem-enabled: "true"
-        pyroscope.io/scrape: "true"
     spec:
       automountServiceAccountToken: false
+      serviceAccountName: sample
       containers:
         - image: local/sample/sampleapp
           imagePullPolicy: IfNotPresent
           name: sampleapp
           env:
-            - name: OTL_ENDPOINT
-              value: alloy.monitoring.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://alloy.monitoring.svc.cluster.local:4317
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
           ports:
-            - name: metric
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 8081
+            - name: metrics
               containerPort: 9090
-            - name: healthchecks
+            - name: probes
               containerPort: 9091
           resources:
             limits:
@@ -74,36 +82,24 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: healthchecks
+              port: probes
             initialDelaySeconds: 2
             periodSeconds: 10
             timeoutSeconds: 1
-            successThreshold: 1
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /readyz
-              port: healthchecks
+              port: probes
             initialDelaySeconds: 2
             periodSeconds: 10
             timeoutSeconds: 1
             failureThreshold: 3
       restartPolicy: Always
       securityContext:
-        fsGroup: 2000
-        runAsGroup: 3000
+        # the user of the base image (see .ko.yaml).
         runAsNonRoot: true
-        runAsUser: 1000
-      serviceAccountName: sample
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
       terminationGracePeriodSeconds: 60
----
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: sampleapp
-  namespace: sample
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: sampleapp

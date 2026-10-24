@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"crypto/tls"
 	"os"
 	"strings"
 	"testing"
@@ -61,24 +62,38 @@ func TestNewResource(t *testing.T) {
 	}
 }
 
+// unsetTracerEnv unsets the environment variables read by NewTracer for the test.
+func unsetTracerEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_TRACES_SAMPLER_ARG",
+		"OTL_TRACE_SAMPLE_RATE", "OTL_ENDPOINT", "OTEL_RESOURCE_ATTRIBUTES",
+	} {
+		t.Setenv(k, "")
+		require.NoError(t, os.Unsetenv(k))
+	}
+}
+
 func TestTracerOptions(t *testing.T) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13}
 	tests := []struct {
 		name string
-		opts []func(*TracerOption)
-		want TracerOption
+		opts []TracerOption
+		want tracerOptions
 	}{
-		{name: "no options", want: TracerOption{OtlEndpoint: "default:4317", SampleRate: 1}},
-		{name: "sample rate", opts: []func(*TracerOption){WithSampleRate(0.5)}, want: TracerOption{OtlEndpoint: "default:4317", SampleRate: 0.5}},
-		{name: "endpoint", opts: []func(*TracerOption){WithOtelEndpoint("collector:4317")}, want: TracerOption{OtlEndpoint: "collector:4317", SampleRate: 1}},
+		{name: "no options", want: tracerOptions{sampleRate: 1}},
+		{name: "sample rate", opts: []TracerOption{WithSampleRate(0.5)}, want: tracerOptions{sampleRate: 0.5}},
+		{name: "endpoint", opts: []TracerOption{WithOTLPEndpoint("collector:4317")}, want: tracerOptions{endpoint: "collector:4317", sampleRate: 1}},
+		{name: "tls", opts: []TracerOption{WithTLSConfig(cfg)}, want: tracerOptions{sampleRate: 1, tlsConfig: cfg}},
 		{
 			name: "last option wins",
-			opts: []func(*TracerOption){WithSampleRate(0.5), WithSampleRate(0), WithOtelEndpoint("a:1"), WithOtelEndpoint("b:2")},
-			want: TracerOption{OtlEndpoint: "b:2", SampleRate: 0},
+			opts: []TracerOption{WithSampleRate(0.5), WithSampleRate(0), WithOTLPEndpoint("a:1"), WithOTLPEndpoint("b:2")},
+			want: tracerOptions{endpoint: "b:2", sampleRate: 0},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			o := TracerOption{OtlEndpoint: "default:4317", SampleRate: 1}
+			o := tracerOptions{sampleRate: 1}
 			for _, opt := range tt.opts {
 				opt(&o)
 			}
@@ -87,29 +102,53 @@ func TestTracerOptions(t *testing.T) {
 	}
 }
 
+func TestExporterEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		endpoint string
+		want     string
+	}{
+		{name: "default", want: "127.0.0.1:4317"},
+		{name: "legacy env", env: map[string]string{"OTL_ENDPOINT": "legacy:4317"}, want: "legacy:4317"},
+		{name: "standard env is read by the exporter", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317", "OTL_ENDPOINT": "legacy:4317"}, want: ""},
+		{name: "standard traces env is read by the exporter", env: map[string]string{"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://collector:4317"}, want: ""},
+		{name: "option overrides env", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4317"}, endpoint: "option:4317", want: "option:4317"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unsetTracerEnv(t)
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			assert.Equal(t, tt.want, exporterEndpoint(&tracerOptions{endpoint: tt.endpoint}))
+		})
+	}
+}
+
 func TestNewTracer(t *testing.T) {
 	tests := []struct {
 		name        string
 		env         map[string]string
-		opts        []func(*TracerOption)
+		opts        []TracerOption
 		wantSampled bool
 		wantErr     bool
 	}{
 		{name: "default always samples", wantSampled: true},
-		{name: "sample rate option", opts: []func(*TracerOption){WithSampleRate(0)}},
+		{name: "sample rate option", opts: []TracerOption{WithSampleRate(0)}},
 		{name: "sample rate from env", env: map[string]string{"OTL_TRACE_SAMPLE_RATE": "0"}},
-		{name: "option overrides env", env: map[string]string{"OTL_TRACE_SAMPLE_RATE": "0"}, opts: []func(*TracerOption){WithSampleRate(1)}, wantSampled: true},
-		{name: "endpoint option", opts: []func(*TracerOption){WithOtelEndpoint("127.0.0.1:14317")}, wantSampled: true},
+		{name: "option overrides env", env: map[string]string{"OTL_TRACE_SAMPLE_RATE": "0"}, opts: []TracerOption{WithSampleRate(1)}, wantSampled: true},
+		{name: "endpoint option", opts: []TracerOption{WithOTLPEndpoint("127.0.0.1:14317")}, wantSampled: true},
 		{name: "endpoint from env", env: map[string]string{"OTL_ENDPOINT": "127.0.0.1:14317"}, wantSampled: true},
+		{name: "standard sample rate env", env: map[string]string{"OTEL_TRACES_SAMPLER_ARG": "0", "OTL_TRACE_SAMPLE_RATE": "1"}},
+		{name: "standard endpoint env", env: map[string]string{"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:14317"}, wantSampled: true},
 		{name: "invalid sample rate env", env: map[string]string{"OTL_TRACE_SAMPLE_RATE": "always"}, wantErr: true},
+		{name: "invalid standard sample rate env", env: map[string]string{"OTEL_TRACES_SAMPLER_ARG": "always"}, wantErr: true},
 		{name: "malformed resource env", env: map[string]string{"OTEL_RESOURCE_ATTRIBUTES": "service.version"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, k := range []string{"OTL_TRACE_SAMPLE_RATE", "OTL_ENDPOINT", "OTEL_RESOURCE_ATTRIBUTES"} {
-				t.Setenv(k, "")
-				require.NoError(t, os.Unsetenv(k))
-			}
+			unsetTracerEnv(t)
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
@@ -128,8 +167,9 @@ func TestNewTracer(t *testing.T) {
 
 			assert.Equal(t, tp, otel.GetTracerProvider(), "global tracer provider is set")
 			fields := otel.GetTextMapPropagator().Fields()
-			assert.Contains(t, fields, "b3")
-			assert.Contains(t, fields, "x-b3-traceid")
+			for _, f := range []string{"traceparent", "baggage", "b3", "x-b3-traceid"} {
+				assert.Contains(t, fields, f)
+			}
 
 			// spans are not ended so nothing is exported to the (unavailable) collector.
 			_, span := tp.Tracer("test").Start(context.Background(), "span")

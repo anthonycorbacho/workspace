@@ -1,4 +1,4 @@
-package blobminio
+package minio
 
 import (
 	"io"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/anthonycorbacho/workspace/kit/blob"
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/minio/minio-go/v7"
+	miniogo "github.com/minio/minio-go/v7"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -31,19 +31,19 @@ func TestToBlobErr(t *testing.T) {
 		},
 		{
 			name:    "no such key",
-			err:     minio.ErrorResponse{Code: "NoSuchKey", Message: "missing key", Key: "file.txt"},
+			err:     miniogo.ErrorResponse{Code: "NoSuchKey", Message: "missing key", Key: "file.txt"},
 			wantIs:  blob.ErrNotFound,
 			wantMsg: "missing key: file.txt: not found",
 		},
 		{
 			name:    "no such bucket",
-			err:     minio.ErrorResponse{Code: "NoSuchBucket", Message: "missing bucket", BucketName: "bucket"},
+			err:     miniogo.ErrorResponse{Code: "NoSuchBucket", Message: "missing bucket", BucketName: "bucket"},
 			wantIs:  blob.ErrNotFound,
 			wantMsg: "missing bucket: bucket: not found",
 		},
 		{
 			name:   "other minio error",
-			err:    minio.ErrorResponse{Code: "AccessDenied", Message: "access denied"},
+			err:    miniogo.ErrorResponse{Code: "AccessDenied", Message: "access denied"},
 			wantIs: blob.ErrInternal,
 		},
 		{
@@ -66,7 +66,7 @@ func TestToBlobErr(t *testing.T) {
 func TestToPutOptions(t *testing.T) {
 	tests := []struct {
 		name     string
-		convert  func(...blob.WriteOption) *minio.PutObjectOptions
+		convert  func(...blob.WriteOption) *miniogo.PutObjectOptions
 		opts     []blob.WriteOption
 		wantType string
 		wantPart uint64
@@ -85,7 +85,7 @@ func TestToPutOptions(t *testing.T) {
 			name:    "put with options",
 			convert: toPutOptions,
 			opts: []blob.WriteOption{
-				blob.WithContentTypeCsv(),
+				blob.WithContentTypeCSV(),
 				blob.WithPartSize(1),
 				blob.WithUserMetadata(map[string]string{"a": "1"}),
 				blob.WithUserTags(map[string]string{"b": "2"}),

@@ -7,31 +7,24 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-var _ Queryable = (*sqlx.DB)(nil)
-var _ Queryable = (*sqlx.Tx)(nil)
+var (
+	_ Queryable = (*DB)(nil)
+	_ Queryable = (*sqlx.DB)(nil)
+	_ Queryable = (*sqlx.Tx)(nil)
+)
 
-// Queryable includes all methods shared by sqlx.DB and sqlx.Tx, allowing
-// either type to be used interchangeably.
+// Queryable includes the context aware methods shared by DB, sqlx.DB and sqlx.Tx,
+// allowing a function to run its queries either on the database or in a transaction.
+//
+// It is a sqlx.ExtContext, it can be used with the sqlx helpers (eg: sqlx.NamedQueryContext).
 type Queryable interface {
-	sqlx.Ext
-	sqlx.ExecerContext
+	sqlx.ExtContext
 	sqlx.PreparerContext
-	sqlx.QueryerContext
-	sqlx.Preparer
 
-	GetContext(context.Context, any, string, ...any) error
-	SelectContext(context.Context, any, string, ...any) error
-	Get(any, string, ...any) error
-	MustExecContext(context.Context, string, ...any) sql.Result
-	PreparexContext(context.Context, string) (*sqlx.Stmt, error)
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-	Select(any, string, ...any) error
-	QueryRow(string, ...any) *sql.Row
-	PrepareNamedContext(context.Context, string) (*sqlx.NamedStmt, error)
-	PrepareNamed(string) (*sqlx.NamedStmt, error)
-	Preparex(string) (*sqlx.Stmt, error)
-	NamedExec(string, any) (sql.Result, error)
-	NamedExecContext(context.Context, string, any) (sql.Result, error)
-	MustExec(string, ...any) sql.Result
-	NamedQuery(string, any) (*sqlx.Rows, error)
+	GetContext(ctx context.Context, dest any, query string, args ...any) error
+	SelectContext(ctx context.Context, dest any, query string, args ...any) error
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	NamedExecContext(ctx context.Context, query string, arg any) (sql.Result, error)
+	PreparexContext(ctx context.Context, query string) (*sqlx.Stmt, error)
+	PrepareNamedContext(ctx context.Context, query string) (*sqlx.NamedStmt, error)
 }

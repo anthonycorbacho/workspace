@@ -2,18 +2,18 @@ package nats
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	nats "github.com/nats-io/nats.go"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var _ pubsub.Publisher = (*Publisher)(nil)
+
+// publishTimeout is the maximum duration of a publish, unless the context is done before.
+const publishTimeout = 5 * time.Second
 
 // Publisher publishes a message on a NATS JetStream Stream's Pub/Sub topic.
 //
@@ -26,9 +26,9 @@ type Publisher struct {
 	js nats.JetStreamContext
 }
 
-// NewPublisher create a new Nats JetStream publisher.
+// NewPublisher creates a NATS JetStream publisher using the connection nc and its JetStream context js.
 //
-// It required a call to Close in order to stop processing messages and close topic connections.
+// Close must be called to publish the pending messages and close the connection.
 func NewPublisher(nc *nats.Conn, js nats.JetStreamContext) (*Publisher, error) {
 	if nc == nil {
 		return nil, errors.New("invalid nats connection")
@@ -43,7 +43,7 @@ func NewPublisher(nc *nats.Conn, js nats.JetStreamContext) (*Publisher, error) {
 	}, nil
 }
 
-// Close notifies the Publisher to stop processing messages, send all the remaining messages and close the connection.
+// Close drains the connection: the pending messages are published before the connection is closed.
 func (p *Publisher) Close() error {
 	if p.isClosed() {
 		return pubsub.ErrPublisherClosed
@@ -75,42 +75,36 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 		o(&options)
 	}
 
-	var span trace.Span
-	_, span = tracer.Start(ctx, fmt.Sprintf("Publish %s", topic))
-	span.SetAttributes(attribute.String("topic", topic))
+	// the subject header is set by the publisher and the trace context is injected in the
+	// headers, they can't be overridden by the attributes of the options.
+	headers := make(nats.Header, len(options.Attributes)+2)
+	for k, v := range options.Attributes {
+		headers.Set(k, v)
+	}
+	headers.Set(subjectHeader, topic)
+	natsMsg := &nats.Msg{
+		Subject: topic,
+		Header:  headers,
+		Data:    msg,
+	}
+	ctx, span := startPublishSpan(ctx, tracer, natsMsg)
 	defer span.End()
 
 	// if the publisher is in closing state or has been closed
 	// we return an error and annotate the trace with the error.
 	if p.isClosed() {
 		err := pubsub.ErrPublisherClosed
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-
+		tracing.RecordError(span, err)
 		return err
 	}
 
-	// Prepare headers that will be passed to the pubsub
-	headers := make(map[string][]string)
-	for k, v := range options.Attributes {
-		headers[k] = []string{v}
-	}
-	headers["subject"] = []string{topic}
-	tracingAttributes(span, headers)
-	natsMsg := &nats.Msg{
-		Subject: topic,
-		Header:  headers,
-		Data:    msg,
-	}
-
-	timeoutCtx, fn := context.WithTimeout(context.Background(), 5*time.Second)
-	defer fn()
+	timeoutCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	defer cancel()
 	_, err := p.js.PublishMsg(natsMsg, nats.Context(timeoutCtx))
 
 	// in case of error we set the trace to error and return.
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		tracing.RecordError(span, err)
 		return err
 	}
 

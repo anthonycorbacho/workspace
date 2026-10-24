@@ -10,11 +10,19 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/slok/go-http-metrics/middleware"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// handler returns an measuring standard http.Handler.
+// handler returns a standard http.Handler recording the metrics of the requests, and naming their span
+// (eg: started by otelhttp) after the route pattern.
 func handler(m middleware.Middleware, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route := routePattern(r)
+		span := trace.SpanFromContext(r.Context())
+		span.SetName(r.Method + " " + route)
+		span.SetAttributes(semconv.HTTPRoute(route))
+		recordRoute(r.Context(), route)
 		wi := &responseWriterInterceptor{
 			statusCode:     http.StatusOK,
 			ResponseWriter: w,
@@ -23,14 +31,14 @@ func handler(m middleware.Middleware, h http.Handler) http.Handler {
 			w: wi,
 			r: r,
 		}
-		m.Measure(routePattern(r), reporter, func() {
+		m.Measure(route, reporter, func() {
 			h.ServeHTTP(wi, r)
 		})
 	})
 }
 
 // Middleware sets up a handler to record metric of the incoming
-// requests.
+// requests, the request span is renamed after the route pattern (eg: GET /users/{id}).
 // This middleware will register the route pattern and not the url path
 // in order to avoid high cardinality path, so it must be applied on the routed handler
 // (after the http.ServeMux or grpc-gateway routing).

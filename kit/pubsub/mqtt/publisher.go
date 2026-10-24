@@ -2,17 +2,22 @@ package mqtt
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/eclipse/paho.golang/paho"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 )
 
 var _ pubsub.Publisher = (*Publisher)(nil)
+
+const (
+	// publishTimeout is the maximum duration of a publish, unless the context is done before.
+	publishTimeout = 5 * time.Second
+	// disconnectTimeout is the maximum duration of the disconnection on Close.
+	disconnectTimeout = 10 * time.Second
+)
 
 // Publisher publishes a message on a MQTT topic.
 type Publisher struct {
@@ -21,9 +26,9 @@ type Publisher struct {
 	client    *Client
 }
 
-// NewPublisher create a new MQTT publisher.
+// NewPublisher creates a MQTT publisher using client.
 //
-// It required a call to Close in order to stop processing messages.
+// Close must be called to disconnect the client.
 func NewPublisher(client *Client) (*Publisher, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
@@ -34,7 +39,7 @@ func NewPublisher(client *Client) (*Publisher, error) {
 	}, nil
 }
 
-// Close notifies the Publisher to stop processing messages, send all the remaining messages and close the connection.
+// Close stops publishing and disconnects the client.
 func (p *Publisher) Close() error {
 	p.closeLock.Lock()
 	if p.closed {
@@ -44,13 +49,17 @@ func (p *Publisher) Close() error {
 	p.closed = true
 	p.closeLock.Unlock()
 
-	ctx, fn := context.WithTimeout(context.Background(), 10*time.Second)
-	defer fn()
+	// Close has no context, the disconnection is bounded by disconnectTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), disconnectTimeout)
+	defer cancel()
 	return p.client.Disconnect(ctx)
 }
 
-// Publish publishes a message on a MQTT topic.
-// It blocks until the message is successfully published or an error occurred.
+// Publish publishes a message on a MQTT topic, with the QoS 1 unless pubsub.WithQoS is given.
+// It blocks until the message is successfully published (acknowledged by the broker for the
+// QoS 1 and 2) or an error occurred.
+//
+// The attributes and the trace context are sent as MQTT v5 user properties.
 func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Message, opts ...pubsub.PublishOption) error {
 	if len(topic) == 0 {
 		return pubsub.ErrNilTopic
@@ -67,47 +76,39 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 		o(options)
 	}
 
-	ctx, span := tracer.Start(ctx, fmt.Sprintf("Publish %s", topic))
-	span.SetAttributes(attribute.String("topic", topic))
+	// the topic property is set by the publisher and the trace context is injected in the
+	// properties, they can't be overridden by the attributes of the options.
+	properties := make(paho.UserProperties, 0, len(options.Attributes)+3)
+	for k, v := range options.Attributes {
+		properties.Add(k, v)
+	}
+	publish := paho.Publish{
+		QoS:        byte(options.QoS),
+		Retain:     options.Retained,
+		Topic:      topic,
+		Properties: &paho.PublishProperties{User: properties},
+		Payload:    msg,
+	}
+	userPropertiesCarrier{&publish.Properties.User}.Set(topicProperty, topic)
+	ctx, span := startPublishSpan(ctx, tracer, &publish)
 	defer span.End()
 
 	// if the publisher is in closing state or has been closed
 	// we return an error and annotate the trace with the error.
 	if p.isClosed() {
 		err := pubsub.ErrPublisherClosed
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		tracing.RecordError(span, err)
 		return err
 	}
 
-	// Prepare attributes that will be passed to the pubsub
-	attributes := paho.UserProperties{}
-	attributes.Add("topic", topic)
-	attributes = tracingAttributes(span, attributes)
-	// add custom user attributes
-	for k, v := range options.Attributes {
-		attributes.Add(k, v)
-	}
-
 	// Setup a timeout for the publisher to give up and attempt to publish the message to the pubsub.
-	timeoutCtx, fn := context.WithTimeout(ctx, 5*time.Second)
-	defer fn()
-
-	publish := paho.Publish{
-		QoS:    byte(options.QoS),
-		Retain: options.Retained,
-		Topic:  topic,
-		Properties: &paho.PublishProperties{
-			User: attributes,
-		},
-		Payload: msg,
-	}
+	timeoutCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	defer cancel()
 
 	_, err := p.client.Publish(timeoutCtx, &publish)
 	// in case of error we set the trace to error and return.
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		tracing.RecordError(span, err)
 		return err
 	}
 

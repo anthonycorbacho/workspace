@@ -4,66 +4,74 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// tracer represents a Kafka pubsub tracer
+// tracer is the tracer of the Kafka publishers and subscribers.
 var tracer = otel.Tracer("kit/pubsub/kafka")
 
-func tracingAttributes(span trace.Span, headers []kgo.RecordHeader) []kgo.RecordHeader {
-	headers = append(headers,
-		kgo.RecordHeader{Key: "trace", Value: []byte(span.SpanContext().TraceID().String())},
-		kgo.RecordHeader{Key: "span", Value: []byte(span.SpanContext().SpanID().String())},
-		kgo.RecordHeader{Key: "trace-state", Value: []byte(span.SpanContext().TraceState().String())},
-		kgo.RecordHeader{Key: "trace-remote", Value: []byte(strconv.FormatBool(span.SpanContext().IsRemote()))},
-		kgo.RecordHeader{Key: "trace-sampled", Value: []byte(strconv.FormatBool(span.SpanContext().IsSampled()))},
-	)
-	return headers
+// recordCarrier adapts the headers of a Kafka record to propagation.TextMapCarrier.
+type recordCarrier struct {
+	record *kgo.Record
 }
 
-func contextFromTracingAttributes(ctx context.Context, headers []kgo.RecordHeader) context.Context {
-	headerMap := make(map[string]string)
-	for _, h := range headers {
-		headerMap[h.Key] = string(h.Value)
-	}
+var _ propagation.TextMapCarrier = recordCarrier{}
 
-	traceID, err := trace.TraceIDFromHex(headerMap["trace"])
-	if err != nil {
-		return ctx
+// Get returns the value of the first header with key.
+func (c recordCarrier) Get(key string) string {
+	for _, h := range c.record.Headers {
+		if h.Key == key {
+			return string(h.Value)
+		}
 	}
-	spanID, err := trace.SpanIDFromHex(headerMap["span"])
-	if err != nil {
-		return ctx
-	}
+	return ""
+}
 
-	stats, err := trace.ParseTraceState(headerMap["trace-state"])
-	if err != nil {
-		return ctx
+// Set sets the value of the header with key, replacing the headers with the same key.
+func (c recordCarrier) Set(key, value string) {
+	headers := c.record.Headers[:0]
+	for _, h := range c.record.Headers {
+		if h.Key != key {
+			headers = append(headers, h)
+		}
 	}
+	c.record.Headers = append(headers, kgo.RecordHeader{Key: key, Value: []byte(value)})
+}
 
-	remote, err := strconv.ParseBool(headerMap["trace-remote"])
-	if err != nil {
-		return ctx
+// Keys returns the keys of the headers.
+func (c recordCarrier) Keys() []string {
+	keys := make([]string, 0, len(c.record.Headers))
+	for _, h := range c.record.Headers {
+		keys = append(keys, h.Key)
 	}
+	return keys
+}
 
-	sampled, err := strconv.ParseBool(headerMap["trace-sampled"])
-	if err != nil {
-		return ctx
-	}
+// startPublishSpan starts the span publishing record, the span context is injected in the record headers.
+func startPublishSpan(ctx context.Context, tracer trace.Tracer, record *kgo.Record) (context.Context, trace.Span) {
+	return tracing.StartPublish(ctx, tracer, semconv.MessagingSystemKafka, record.Topic, recordCarrier{record}, recordAttributes(record)...)
+}
 
-	scc := trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceState: stats,
-		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
-		Remote:     remote,
-	}
+// startProcessSpan starts the span processing record, child of the span the record was published with.
+func startProcessSpan(ctx context.Context, tracer trace.Tracer, record *kgo.Record) (context.Context, trace.Span) {
+	attrs := append(recordAttributes(record),
+		semconv.MessagingDestinationPartitionID(strconv.Itoa(int(record.Partition))),
+		semconv.MessagingKafkaOffset(int(record.Offset)),
+	)
+	return tracing.StartProcess(ctx, tracer, semconv.MessagingSystemKafka, record.Topic, recordCarrier{record}, attrs...)
+}
 
-	sc := trace.NewSpanContext(scc)
-	if !sc.IsValid() {
-		return ctx
+// recordAttributes returns the span attributes of record.
+func recordAttributes(record *kgo.Record) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{semconv.MessagingMessageBodySize(len(record.Value))}
+	if len(record.Key) > 0 {
+		attrs = append(attrs, semconv.MessagingKafkaMessageKey(string(record.Key)))
 	}
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
+	return attrs
 }

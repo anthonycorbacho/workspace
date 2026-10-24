@@ -1,4 +1,4 @@
-package blobminio
+package minio
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/anthonycorbacho/workspace/kit/blob"
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/id"
-	"github.com/minio/minio-go/v7"
+	miniogo "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/stretchr/testify/suite"
 )
@@ -28,7 +28,7 @@ type MinioTestSuite struct {
 	ctx    context.Context
 	url    string
 	bucket string
-	minio  *minio.Client
+	minio  *miniogo.Client
 	client *Client
 }
 
@@ -41,7 +41,7 @@ func (s *MinioTestSuite) SetupSuite() {
 	s.ctx = context.TODO()
 	s.bucket = fmt.Sprintf("my-test-bucket-%s", id.New())
 	// NOTE: need to setup credentials via mc admin when testing locally
-	c, err := minio.New(s.url, &minio.Options{
+	c, err := miniogo.New(s.url, &miniogo.Options{
 		Creds: credentials.NewStaticV4("miniouser", "miniopwd", ""),
 	})
 	if ok := s.Nil(err); !ok {
@@ -49,7 +49,7 @@ func (s *MinioTestSuite) SetupSuite() {
 	}
 
 	if ok, _ := c.BucketExists(s.ctx, s.bucket); !ok {
-		err = c.MakeBucket(s.ctx, s.bucket, minio.MakeBucketOptions{})
+		err = c.MakeBucket(s.ctx, s.bucket, miniogo.MakeBucketOptions{})
 		if ok := s.Nil(err); !ok {
 			s.FailNow("failed to create minio test bucket")
 		}
@@ -70,9 +70,9 @@ func (s *MinioTestSuite) TearDownSuite() {
 	if s.minio == nil {
 		return
 	}
-	for obj := range s.minio.ListObjects(s.ctx, s.bucket, minio.ListObjectsOptions{Recursive: true}) {
+	for obj := range s.minio.ListObjects(s.ctx, s.bucket, miniogo.ListObjectsOptions{Recursive: true}) {
 		if obj.Err == nil {
-			_ = s.minio.RemoveObject(s.ctx, s.bucket, obj.Key, minio.RemoveObjectOptions{})
+			_ = s.minio.RemoveObject(s.ctx, s.bucket, obj.Key, miniogo.RemoveObjectOptions{})
 		}
 	}
 	_ = s.minio.RemoveBucket(s.ctx, s.bucket)
@@ -116,6 +116,14 @@ func (s *MinioTestSuite) TestMinio_Write() {
 			"mynewfile.txt",
 			"content 2",
 			fmt.Sprintf("http://%s/%s/mynewfile.txt", s.url, s.bucket),
+			nil,
+		},
+		{
+			"should succeed to write empty file",
+			s.bucket,
+			"myemptyfile.txt",
+			"",
+			fmt.Sprintf("http://%s/%s/myemptyfile.txt", s.url, s.bucket),
 			nil,
 		},
 	}
@@ -235,7 +243,7 @@ func (s *MinioTestSuite) TestMinio_Exist() {
 }
 
 func (s *MinioTestSuite) TestMinio_Head() {
-	err := s.client.Write(s.ctx, s.bucket, "head.csv", []byte("a,b\n1,2\n"), blob.WithContentTypeCsv())
+	err := s.client.Write(s.ctx, s.bucket, "head.csv", []byte("a,b\n1,2\n"), blob.WithContentTypeCSV())
 	s.Require().NoError(err)
 
 	tests := []struct {
@@ -316,19 +324,6 @@ func (s *MinioTestSuite) TestMinio_WriteOptions() {
 			wantTags:     map[string]string{"env": "test"},
 		},
 		{
-			name: "sync write with options",
-			write: func(filename string, opts ...blob.WriteOption) error {
-				return s.client.SyncWrite(s.ctx, s.bucket, filename, []byte("data"), opts...)
-			},
-			opts: []blob.WriteOption{
-				blob.WithContentTypeCsv(),
-				blob.WithUserMetadata(map[string]string{"Owner": "kit"}),
-			},
-			wantType:     "text/csv",
-			wantMetadata: map[string]string{"Owner": "kit"},
-			wantTags:     map[string]string{},
-		},
-		{
 			name: "writer with options",
 			write: func(filename string, opts ...blob.WriteOption) error {
 				w, err := s.client.Writer(s.ctx, s.bucket, filename, opts...)
@@ -355,14 +350,14 @@ func (s *MinioTestSuite) TestMinio_WriteOptions() {
 			filename := id.New() + ".txt"
 			s.Require().NoError(tt.write(filename, tt.opts...))
 
-			stat, err := s.minio.StatObject(s.ctx, s.bucket, filename, minio.StatObjectOptions{})
+			stat, err := s.minio.StatObject(s.ctx, s.bucket, filename, miniogo.StatObjectOptions{})
 			s.Require().NoError(err)
 			s.Equal(tt.wantType, stat.ContentType)
 			for k, v := range tt.wantMetadata {
 				s.Equal(v, stat.UserMetadata[k], k)
 			}
 
-			tags, err := s.minio.GetObjectTagging(s.ctx, s.bucket, filename, minio.GetObjectTaggingOptions{})
+			tags, err := s.minio.GetObjectTagging(s.ctx, s.bucket, filename, miniogo.GetObjectTaggingOptions{})
 			s.Require().NoError(err)
 			s.Equal(tt.wantTags, tags.ToMap())
 
@@ -404,18 +399,6 @@ func (s *MinioTestSuite) TestMinio_ReadCanceledContext() {
 	cancel()
 	_, err := s.client.Read(ctx, s.bucket, "myfile.txt")
 	s.ErrorIs(err, blob.ErrInternal)
-}
-
-func (s *MinioTestSuite) TestMinio_SyncWriterReportsError() {
-	done := make(chan error, 1)
-	w, err := s.client.SyncWriter(s.ctx, "syncwriterbucket", "sync.txt", done)
-	s.Require().NoError(err)
-	_, err = w.Write([]byte("sync content"))
-	if err == nil {
-		err = w.Close()
-	}
-	s.ErrorIs(err, blob.ErrNotFound)
-	s.Error(<-done)
 }
 
 func (s *MinioTestSuite) TestMinio_PresignedURLs() {
@@ -589,59 +572,6 @@ func (s *MinioTestSuite) TestMinio_PutPresignedURL() {
 	}
 }
 
-func (s *MinioTestSuite) TestMinio_SyncWrite() {
-	type testStruct struct {
-		name          string
-		inBucket      string
-		inFileName    string
-		inData        string
-		want          string
-		expectedError error
-	}
-	tests := []testStruct{
-		// might be an issue in the emulator (or default behavior)
-		// it create the bucket by default
-		{
-			"should get error: bucket does not exist",
-			"writebucket",
-			"myfile.txt",
-			"content",
-			"",
-			blob.ErrNotFound,
-		},
-		{
-			"should succeed to write new file",
-			s.bucket,
-			"mynewfile3.txt",
-			"content",
-			fmt.Sprintf("http://%s/%s/mynewfile3.txt", s.url, s.bucket),
-			nil,
-		},
-		{
-			"should succeed to ovewrite file",
-			s.bucket,
-			"mynewfile3.txt",
-			"content 2",
-			fmt.Sprintf("http://%s/%s/mynewfile3.txt", s.url, s.bucket),
-			nil,
-		},
-		{
-			"should succeed to write empty file",
-			s.bucket,
-			"myemptyfile.txt",
-			"",
-			fmt.Sprintf("http://%s/%s/myemptyfile.txt", s.url, s.bucket),
-			nil,
-		},
-	}
-	for _, tt := range tests {
-		s.Run(tt.name, func() {
-			err := s.client.SyncWrite(context.TODO(), tt.inBucket, tt.inFileName, []byte(tt.inData))
-			s.ErrorIs(err, tt.expectedError)
-		})
-	}
-}
-
 func (s *MinioTestSuite) TestMinio_WriterCloseWaitsForUpload() {
 	w, err := s.client.Writer(context.TODO(), s.bucket, "streamed.txt")
 	s.Require().NoError(err)
@@ -663,15 +593,4 @@ func (s *MinioTestSuite) TestMinio_WriterCloseReturnsUploadError() {
 		err = w.Close()
 	}
 	s.ErrorIs(err, blob.ErrNotFound)
-}
-
-func (s *MinioTestSuite) TestMinio_SyncWriterReportsDone() {
-	done := make(chan error)
-	w, err := s.client.SyncWriter(context.TODO(), s.bucket, "sync.txt", done)
-	s.Require().NoError(err)
-	_, err = w.Write([]byte("sync content"))
-	s.Require().NoError(err)
-	// Close must not deadlock while the done channel is not read yet.
-	s.Require().NoError(w.Close())
-	s.NoError(<-done)
 }

@@ -64,13 +64,13 @@ func TestNew(t *testing.T) {
 	tests := []struct {
 		name    string
 		env     string
-		opts    []func(*Option)
+		opts    []Option
 		wantErr bool
 	}{
 		{name: "default level"},
 		{name: "env level", env: "debug"},
 		{name: "env level is case insensitive", env: "WARN"},
-		{name: "with level option", opts: []func(*Option){WithLevel(ErrorLevel)}},
+		{name: "with level option", opts: []Option{WithLevel(ErrorLevel)}},
 		{name: "invalid env level", env: "verbose", wantErr: true},
 	}
 	for _, tt := range tests {
@@ -96,12 +96,12 @@ func TestNewLevel(t *testing.T) {
 	tests := []struct {
 		name  string
 		env   string
-		opts  []func(*Option)
+		opts  []Option
 		level zapcore.Level
 	}{
 		{name: "default is info", level: zapcore.InfoLevel},
 		{name: "from env", env: "DEBUG", level: zapcore.DebugLevel},
-		{name: "option overrides env", env: "debug", opts: []func(*Option){WithLevel(WarnLevel)}, level: zapcore.WarnLevel},
+		{name: "option overrides env", env: "debug", opts: []Option{WithLevel(WarnLevel)}, level: zapcore.WarnLevel},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,11 +129,28 @@ func TestWithLevel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			o := &Option{}
+			o := &options{}
 			WithLevel(tt.level)(o)
-			assert.Equal(t, tt.level, o.Level)
+			assert.Equal(t, tt.level, o.level)
 		})
 	}
+}
+
+func TestWithOutput(t *testing.T) {
+	out := &syncBuffer{}
+	l, err := New(WithOutput(out), WithLevel(InfoLevel))
+	require.NoError(t, err)
+	l.Info(context.Background(), "hello")
+	l.Debug(context.Background(), "filtered")
+
+	entries := out.entries(t)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "hello", entries[0]["Body"])
+	assert.Equal(t, "INFO", entries[0]["Severity"])
+
+	o := defaultOptions(InfoLevel)
+	WithOutput(nil)(o)
+	assert.Equal(t, os.Stderr, o.output, "a nil output is ignored")
 }
 
 func TestParse(t *testing.T) {

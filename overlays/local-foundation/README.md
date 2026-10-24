@@ -18,7 +18,7 @@ All the components are deployed in the `monitoring` namespace.
 | Pyroscope  | Profiles, Alloy scrapes the pods annotated with `pyroscope.io/scrape` |                   |
 | Mimir      | Long term metrics storage (deactivated)                        |                          |
 
-Services send their traces to `alloy.monitoring.svc.cluster.local:4317` (`OTL_ENDPOINT`).
+Services send their traces to `http://alloy.monitoring.svc.cluster.local:4317` (`OTEL_EXPORTER_OTLP_ENDPOINT`).
 
 ### Helm charts
 

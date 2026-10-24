@@ -1,97 +1,67 @@
 #!/usr/bin/env bash
+# Checks that the tools required by the workspace are installed, all the missing tools are reported at once.
 
-set -o errexit
 set -o nounset
 set -o pipefail
 
-common::check_installed() {
+missing=0
+
+# check_installed reports a missing command with its installation instructions.
+check_installed() {
   local cmd=$1
-  local errMsg=$2
-  if [[ -z "$(command -v "${cmd}")" ]]; then
-      echo -e "${errMsg}"
-      return 2
+  local help=$2
+  if ! command -v "${cmd}" > /dev/null 2>&1; then
+    echo "✗ ${cmd} is missing: ${help}"
+    missing=$((missing + 1))
+  else
+    echo "✓ ${cmd}"
   fi
 }
 
-go::verify() {
-  common::check_installed "go" "Can't find 'go' in PATH, please fix and retry. See http://golang.org/doc/install for installation instructions."
-
-  local go_version
-  local minimum_go_version
-  FS=" " read -ra go_version <<< "$(GOFLAGS='' go version)"
-  minimum_go_version=go1.27.0
-
-  if [[ "${minimum_go_version}" != $(echo -e "${minimum_go_version}\n${go_version[2]}" | sort -s -t. -k 1,1 -k 2,2n -k 3,3n | head -n1) && "${go_version[2]}" != "devel" ]]; then
-    echo -e "Detected go version: ${go_version[*]}."
-    echo -e "Cloud-workspace requires ${minimum_go_version} or greater."
-    echo -e "Please install ${minimum_go_version} or later."
-    retrun 2
+check_go_version() {
+  command -v go > /dev/null 2>&1 || return
+  local minimum=go1.27.0
+  local version
+  version=$(GOFLAGS='' go env GOVERSION)
+  if [[ "${version}" != devel* && "${minimum}" != "$(printf '%s\n%s\n' "${minimum}" "${version}" | sort -V | head -n1)" ]]; then
+    echo "✗ go ${version} is too old, the workspace requires ${minimum} or later"
+    missing=$((missing + 1))
   fi
 }
 
-go:install_dependencies() {
-  # protoc plugins are pinned in go.mod (tool directive) and run with `go tool`.
+check_docker_compose() {
+  command -v docker > /dev/null 2>&1 || return
+  if ! docker compose version > /dev/null 2>&1; then
+    echo "✗ docker compose is missing: install Docker Desktop or the compose plugin (https://docs.docker.com/compose/install/)"
+    missing=$((missing + 1))
+  fi
+}
+
+check_go_tools() {
+  command -v go > /dev/null 2>&1 || return
+  # the protoc plugins are pinned in go.mod (tool directive) and run with `go tool`.
   if ! GOFLAGS='' go tool -n protoc-gen-go > /dev/null 2>&1; then
-    echo -e "Can't resolve the go tools (protoc plugins), please run 'go mod download' and retry."
-    return 2
+    echo "✗ the go tools (protoc plugins) can't be resolved: run 'go mod download'"
+    missing=$((missing + 1))
   fi
 }
 
-brew::verify() {
-  common::check_installed "brew" "Can't find 'brew' in PATH, please fix and retry. See https://docs.brew.sh/Installation for installation instructions."
-}
+check_installed go "https://go.dev/doc/install (brew install go)"
+check_installed docker "Docker Desktop or Rancher Desktop with a local kubernetes cluster (https://docs.docker.com/desktop/)"
+check_installed kubectl "https://kubernetes.io/docs/tasks/tools/ (brew install kubectl)"
+check_installed helm "https://helm.sh/docs/intro/install/ (brew install helm), used to render the local charts"
+check_installed tilt "https://docs.tilt.dev/install.html (brew install tilt)"
+check_installed ko "https://ko.build/install/ (brew install ko)"
+check_installed buf "https://buf.build/docs/installation (brew install bufbuild/buf/buf)"
+check_installed golangci-lint "https://golangci-lint.run/welcome/install/ (brew install golangci-lint)"
+check_go_version
+check_docker_compose
+check_go_tools
 
-tilt::verify() {
-  common::check_installed "tilt" "Can't find 'tilt' in PATH, please fix and retry. See https://docs.tilt.dev/install.html for installation instructions."
-}
-
-kubectl::verify() {
-  common::check_installed "kubectl" "Can't find 'kubectl' in PATH, please fix and retry. See https://kubernetes.io/docs/tasks/tools/install-kubectl-macos for installation instructions."
-}
-
-kustomize::verify() {
-  common::check_installed "kustomize" "Can't find 'kustomize' in PATH, please fix and retry. See https://kubectl.docs.kubernetes.io/installation/kustomize for installation instructions."
-}
-
-buf::verify() {
-  common::check_installed "buf" "Can't find 'buf' in PATH, please fix and retry. See https://docs.buf.build/installation for installation instructions."
-}
-
-golangci::verify() {
-  common::check_installed "golangci-lint" "Can't find 'golangci-lint' in PATH, please fix and retry. See https://golangci-lint.run/usage/install/#macos for installation instructions."
-}
-
-kubeseal::verify() {
-  common::check_installed "kubeseal" "Can't find 'kubeseal' in PATH, please fix and retry. See https://github.com/bitnami-labs/sealed-secrets#homebrew for installation instructions."
-}
-
-dockercompose::verify() {
-  common::check_installed "docker-compose" "Can't find 'docker-compose' in PATH, please fix and retry. See https://formulae.brew.sh/formula/docker-compose for installation instructions."
-}
-
-rancherdesktop::verify() {
-  common::check_installed "docker" "Can't find 'rancher-desktop' in PATH, please fix and retry. See https://docs.rancherdesktop.io/getting-started/installation/ for installation instructions."
-}
-
-mockery::verify() {
-  common::check_installed "mockery" "Can't find 'mockery' in PATH, please fix and retry. See https://github.com/vektra/mockery#installation/ for installation instructions."
-}
-
-ko::verify() {
-  # use for tilt go container image
-  common::check_installed "ko" "Can't find 'ko' in PATH, please fix and retry. \nRun 'brew install ko' \nor see https://github.com/google/ko for installation instructions."
-}
-
-brew::verify
-rancherdesktop::verify
-mockery::verify
-tilt::verify
-kubectl::verify
-kustomize::verify
-buf::verify
-golangci::verify
-kubeseal::verify
-dockercompose::verify
-go::verify
-go:install_dependencies
-ko::verify
+if [[ ${missing} -gt 0 ]]; then
+  echo
+  echo "${missing} requirement(s) missing, see above."
+  exit 1
+fi
+echo
+echo "All the requirements are installed."

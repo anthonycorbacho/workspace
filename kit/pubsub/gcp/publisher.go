@@ -2,7 +2,6 @@ package gcp
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"sync"
 	"time"
@@ -11,14 +10,15 @@ import (
 	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 var _ pubsub.Publisher = (*Publisher)(nil)
+
+// publishTimeout is the maximum duration of a publish, unless the context is done before.
+const publishTimeout = 5 * time.Second
 
 // Publisher publishes a message on a Google Cloud Pub/Sub topic.
 //
@@ -31,9 +31,9 @@ type Publisher struct {
 	client     *gcppubsub.Client
 }
 
-// NewPublisher create a new GCP publisher.
+// NewPublisher creates a Google Cloud Pub/Sub publisher using client, closed by Close.
 //
-// It required a call to Close in order to stop processing messages and close topic connections.
+// Close must be called to stop publishing and release the topics.
 func NewPublisher(client *gcppubsub.Client) (*Publisher, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
@@ -81,41 +81,38 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 		o(&options)
 	}
 
-	var span trace.Span
-	ctx, span = tracer.Start(ctx, fmt.Sprintf("Publish %s", topic))
-	span.SetAttributes(attribute.String("topic", topic))
+	// the topic attribute is set by the publisher and the trace context is injected in the
+	// attributes, they can't be overridden by the attributes of the options.
+	attributes := make(map[string]string, len(options.Attributes)+3)
+	maps.Copy(attributes, options.Attributes)
+	attributes[topicAttribute] = topic
+	gcpMsg := &gcppubsub.Message{
+		Data:        msg,
+		Attributes:  attributes,
+		OrderingKey: options.Key,
+	}
+	ctx, span := startPublishSpan(ctx, tracer, topic, gcpMsg)
 	defer span.End()
 
 	// if the publisher is in closing state or has been closed
 	// we return an error and annotate the trace with the error.
 	if p.isClose() {
 		err := pubsub.ErrPublisherClosed
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-
+		tracing.RecordError(span, err)
 		return err
 	}
-
-	// Prepare attributes that will be passed to the pubsub
-	attributes := make(map[string]string)
-	maps.Copy(attributes, options.Attributes)
-	attributes["topic"] = topic
-	tracingAttributes(span, attributes)
 
 	// Get the topic
 	t, err := p.topic(ctx, topic)
 	if err != nil {
+		tracing.RecordError(span, err)
 		return err
 	}
 
 	// Setup a timeout for the publisher to give up and attempt to publish the message to the pubsub.
-	timeoutCtx, fn := context.WithTimeout(context.Background(), 5*time.Second)
-	defer fn()
-	_, err = t.Publish(ctx, &gcppubsub.Message{
-		Data:        msg,
-		Attributes:  attributes,
-		OrderingKey: options.Key,
-	}).Get(timeoutCtx)
+	timeoutCtx, cancel := context.WithTimeout(ctx, publishTimeout)
+	defer cancel()
+	_, err = t.Publish(ctx, gcpMsg).Get(timeoutCtx)
 
 	// in case of error we set the trace to error and return.
 	if err != nil {
@@ -123,8 +120,7 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 		if options.Key != "" {
 			t.ResumePublish(options.Key)
 		}
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		tracing.RecordError(span, err)
 		return err
 	}
 
@@ -137,6 +133,7 @@ func (p *Publisher) isClose() bool {
 	return p.closed
 }
 
+// topic returns the publisher of the topic, it checks the topic exists the first time it is used.
 func (p *Publisher) topic(ctx context.Context, topic string) (*gcppubsub.Publisher, error) {
 	p.topicsLock.RLock()
 	t, ok := p.topics[topic]
@@ -144,12 +141,9 @@ func (p *Publisher) topic(ctx context.Context, topic string) (*gcppubsub.Publish
 	if ok {
 		return t, nil
 	}
-	var err error
 
-	p.topicsLock.Lock()
-	defer p.topicsLock.Unlock()
-
-	_, err = p.client.TopicAdminClient.GetTopic(ctx, &pubsubpb.GetTopicRequest{
+	// checked without the lock so a slow RPC does not block publishing to the other topics.
+	_, err := p.client.TopicAdminClient.GetTopic(ctx, &pubsubpb.GetTopicRequest{
 		Topic: resourceName(p.client.Project(), "topics", topic),
 	})
 	if status.Code(err) == grpccodes.NotFound {
@@ -157,6 +151,18 @@ func (p *Publisher) topic(ctx context.Context, topic string) (*gcppubsub.Publish
 	}
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not check if topic %s exists", topic)
+	}
+
+	p.topicsLock.Lock()
+	defer p.topicsLock.Unlock()
+
+	// Close stops the topics under the lock, a topic added after it would never be stopped.
+	if p.isClose() {
+		return nil, pubsub.ErrPublisherClosed
+	}
+	// another publish may have added the topic during the check.
+	if t, ok := p.topics[topic]; ok {
+		return t, nil
 	}
 
 	t = p.client.Publisher(topic)

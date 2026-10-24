@@ -7,95 +7,40 @@ import (
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/eclipse/paho.golang/paho"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
 )
 
-func testSpanContext(t *testing.T, sampled bool) trace.SpanContext {
-	t.Helper()
-	traceID, err := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
-	require.NoError(t, err)
-	spanID, err := trace.SpanIDFromHex("0102030405060708")
-	require.NoError(t, err)
-	state, err := trace.ParseTraceState("vendor=value")
-	require.NoError(t, err)
-	return trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceState: state,
-		TraceFlags: trace.TraceFlags(0).WithSampled(sampled),
-	})
+func TestTracePropagation(t *testing.T) {
+	rec := tracingtest.NewRecorder(t)
+	msg := &paho.Publish{Topic: "kit/orders", Payload: []byte("hello")}
+
+	_, publish := startPublishSpan(context.Background(), rec.Tracer(), msg)
+	publish.End()
+	assert.NotEmpty(t, msg.Properties.User.Get("traceparent"))
+
+	ctx, process := startProcessSpan(context.Background(), rec.Tracer(), msg)
+	process.End()
+	assert.Equal(t, process.SpanContext(), trace.SpanContextFromContext(ctx))
+	rec.AssertPropagated(t, "kit/orders", process)
 }
 
-func TestTracingAttributesRoundTrip(t *testing.T) {
-	tests := []struct {
-		name    string
-		sampled bool
-	}{
-		{name: "sampled", sampled: true},
-		{name: "not sampled", sampled: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sc := testSpanContext(t, tt.sampled)
-			span := trace.SpanFromContext(trace.ContextWithSpanContext(context.Background(), sc))
+func TestUserPropertiesCarrier(t *testing.T) {
+	props := paho.UserProperties{{Key: "k", Value: "a"}, {Key: "k", Value: "b"}}
+	c := userPropertiesCarrier{&props}
+	assert.Equal(t, "a", c.Get("k"))
+	assert.Equal(t, "", c.Get("missing"))
+	c.Set("k", "c")
+	c.Set("other", "d")
+	assert.Equal(t, paho.UserProperties{{Key: "k", Value: "c"}, {Key: "other", Value: "d"}}, props)
+	assert.Equal(t, []string{"k", "other"}, c.Keys())
 
-			props := paho.UserProperties{}
-			props = tracingAttributes(span, props)
-			assert.Equal(t, sc.TraceID().String(), props.Get("trace"))
-			assert.Equal(t, sc.SpanID().String(), props.Get("span"))
-			assert.Equal(t, "vendor=value", props.Get("trace-state"))
-			assert.Equal(t, "false", props.Get("trace-remote"))
-
-			got := trace.SpanContextFromContext(contextFromTracingAttributes(context.Background(), props))
-			require.True(t, got.IsValid())
-			assert.True(t, got.IsRemote())
-			assert.Equal(t, sc.TraceID(), got.TraceID())
-			assert.Equal(t, sc.SpanID(), got.SpanID())
-			assert.Equal(t, sc.TraceState().String(), got.TraceState().String())
-			assert.Equal(t, tt.sampled, got.IsSampled(), "sampled flag should be propagated")
-		})
-	}
-}
-
-func TestContextFromTracingAttributesInvalid(t *testing.T) {
-	valid := map[string]string{
-		"trace":        "0102030405060708090a0b0c0d0e0f10",
-		"span":         "0102030405060708",
-		"trace-state":  "",
-		"trace-remote": "false",
-	}
-	with := func(k, v string) paho.UserProperties {
-		props := paho.UserProperties{}
-		for key, val := range valid {
-			if key == k {
-				val = v
-			}
-			props.Add(key, val)
-		}
-		return props
-	}
-	tests := []struct {
-		name  string
-		props paho.UserProperties
-	}{
-		{name: "nil", props: nil},
-		{name: "invalid trace id", props: with("trace", "not-hex")},
-		{name: "zero trace id", props: with("trace", "00000000000000000000000000000000")},
-		{name: "invalid span id", props: with("span", "xyz")},
-		{name: "invalid trace state", props: with("trace-state", "no equal sign")},
-		{name: "invalid remote flag", props: with("trace-remote", "maybe")},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.WithValue(context.Background(), struct{}{}, "marker")
-			got := contextFromTracingAttributes(ctx, tt.props)
-			assert.Equal(t, ctx, got)
-			assert.False(t, trace.SpanContextFromContext(got).IsValid())
-		})
-	}
+	// a message received without properties.
+	_, span := startProcessSpan(context.Background(), tracingtest.NewRecorder(t).Tracer(), &paho.Publish{Topic: "t"})
+	span.End()
 }
 
 func TestOptions(t *testing.T) {
@@ -105,7 +50,6 @@ func TestOptions(t *testing.T) {
 		opt  Option
 		want config
 	}{
-		{name: "retained", opt: EnableRetained(), want: config{retained: true}},
 		{name: "keep alive", opt: WithKeepAlive(42), want: config{keepAlive: 42}},
 		{name: "retry", opt: WithRetry(time.Minute), want: config{connectRetryDelay: time.Minute}},
 		{name: "user", opt: WithUser("bob"), want: config{user: "bob"}},
@@ -133,7 +77,7 @@ func TestNewClientValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, err := NewClient(tt.address, tt.clientID)
+			c, err := NewClient(context.Background(), tt.address, tt.clientID)
 			assert.Error(t, err)
 			assert.Nil(t, c)
 		})
@@ -141,7 +85,7 @@ func TestNewClientValidation(t *testing.T) {
 }
 
 func TestNewClientUnreachable(t *testing.T) {
-	c, err := NewClient("mqtt://127.0.0.1:1", "id", WithRetry(100*time.Millisecond))
+	c, err := NewClient(context.Background(), "mqtt://127.0.0.1:1", "id", WithRetry(100*time.Millisecond))
 	assert.Error(t, err)
 	assert.Nil(t, c)
 }

@@ -24,12 +24,12 @@ func TestWriteOptions(t *testing.T) {
 		},
 		{
 			name: "content type csv",
-			opts: []blob.WriteOption{blob.WithContentTypeCsv()},
+			opts: []blob.WriteOption{blob.WithContentTypeCSV()},
 			want: blob.WriteOptions{ContentType: "text/csv"},
 		},
 		{
 			name: "last content type wins",
-			opts: []blob.WriteOption{blob.WithContentTypeCsv(), blob.WithContentType("text/plain")},
+			opts: []blob.WriteOption{blob.WithContentTypeCSV(), blob.WithContentType("text/plain")},
 			want: blob.WriteOptions{ContentType: "text/plain"},
 		},
 		{

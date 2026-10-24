@@ -7,6 +7,7 @@ An error also must serve the different goals for each of its consumer roles—th
 * [Why we Err](#why-we-err)
 * [Who consumes our Errors](#who-consumes-our-errors)
 * [Working with error effectively](#working-with-error-effectively)
+* [Coded errors](#coded-errors)
 
 ## Why we Err
 Errors, at their core, are simply a way of explaining why things didn't go how you wanted them to. 
@@ -26,7 +27,8 @@ An undefined error is one that is undocumented by the API and therefore we are u
 
 ### Error Message Style Guide and principle
 
- - Use `errors.New` for simple messages and `errors.NewF` for formatted messages. Make sure you're using the [kit/errors package](../../kit/errors). 
+ - Use `errors.New` for simple messages and `errors.Newf` for formatted messages, `errors.Wrap` and `errors.Wrapf` to add context to an error. Make sure you're using the [kit/errors package](../../kit/errors).
+ - The errors returned to a client are coded errors (see [Coded errors](#coded-errors)), never plain errors.
  - Error messages start with lowercase and no punctuation at the end: `unable to open file` instead of `Unable to open file.. `
  - Error messages should be actionable, e.g. `no such directory` instead of `loading service config`. 
  - Use `unable to...` instead of `failed to...`, `can't...`, or `could not...`. 
@@ -51,84 +53,63 @@ These users are still limited to well-defined errors since revealing undefined e
 ### Operator role
 Finally, the last line of defense is the system operator which may be a developer or an operations person. These people understand the details of the system and can work with any kind of error.
 
-In this role, you typically want to see as much information as possible. In addition to the error code and human-readable message, a logical stack trace can help the operator understand the program flow.
+In this role, you typically want to see as much information as possible. In addition to the error code and human-readable message, the context added by each layer (`errors.Wrap`), the cause and the trace id of the request (in the logs) help the operator understand the program flow.
 
 ## Working with error effectively
-Our Go project layout is generally composed into 3 distinct components
+Our Go project layout is generally composed of 3 distinct components (see [go-application-layout.md](go-application-layout.md)):
 
-1. Handler (HTTP, GRPC)
+1. Handler (HTTP, gRPC)
 2. Root (business domain)
 3. Dependency (database, 3rd party client)
 
-Each layer has a different responsibility and errors should be handled differently.
-
-For expected domain errors (eg: not found, unauthorized, etc) it is better to define them at the root layer and utilize them in the dependency layer. This will help to handle efficiently business expected errors without the need to refine and translate them on every dependency layer (eg: grpc client, mock)
-
-### Error at Root layer
-The root layer is the brain of the application. The main goal of the error is to be abstract from the dependency. The root layer should not know about the implementation detail of the dependency, and this also applies to the error, errors are bound to the dependency as they are part of the API.
-
-This is why the Root layer usually has a common error file that groups the expected error type
-
-```go
-// List of expected domain error that are applicable
-// regardless of the implementation detail of the dependency layout.
-const (
-  ErrNotFound  = Error("not found")
-// ...
-)
-
-// Error represents a domain error.
-type Error string
-
-// Error returns the error message.
-func (e Error) Error() string {
-  return string(e)
-}
-```
-
-in the caller function of the service, we can also wrap the error to enable more data context into the error call chain, giving the error enough information to help operator debugging.
-
-```go
-func (srv *MyService) Fetch(ctx context.Context, id string) (&Struct, error) {
-  // ... perform validation and setup tracing
-
-  d, err := svc.client.Fetch(ctx, id)
-  if err != nil {
-    return nil, errors.Wrap(err, "srv.fetch")
-  }
-
-  d2, err := svc.c2.FetchMetadata(ctx, id)
-  if err != nil {
-    return nil, errors.Wrap(err, "myservice.fetch")
-  }
-
-// ...
-
-}
-```
+Each layer has a different responsibility and errors should be handled differently. The expected errors (eg: not
+found, already exists, unauthorized) are coded errors, defined once in the catalog and created where the failure is
+understood, usually the dependency layer: the other layers don't need to translate them.
 
 ### Error at Dependency layer
-In the application layout, this will be the lower level, basically, we will wrap the error with the internal action this layer is doing to give enough error context.
+The dependency layer (an adapter, eg: `postgres/`) is where the dependency errors are known: it translates the well
+defined ones to coded errors and adds context to the undefined ones.
 
 ```go
-func (c *Client) Fetch(ctx context.Context, id string) (&Struct, error) {
-  d, err := c.Select(ctx, id)
-  if err != nil {
-    // case of business defined error
-    if err == sql.ErrNoRows {
-      return nil, myapp.ErrNotFound
-    }
-    // case of undefined error
-    return nil, errors.Warp(error, "sql.client.fetch")
-  }
+func (s *UserStorage) Fetch(ctx context.Context, id string) (*myapp.User, error) {
+	var u user
+	err := s.db.GetContext(ctx, &u, "SELECT id, name FROM users WHERE id = $1", id)
+	if err != nil {
+		// well defined error: the dependency error is kept as the cause, never in the message.
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.SampleUserNotFound(id).WithCause(err)
+		}
+		// undefined error: it becomes an Internal error, logged but never sent to the client.
+		return nil, errors.Wrap(err, "selecting user")
+	}
+	return u.toDomain(), nil
+}
+```
 
-  return convert(d), nil
+### Error at Root layer
+The root layer is the brain of the application, it doesn't know about the implementation details of the
+dependencies, nor about the transport. It validates the domain rules and passes the errors through, wrapping
+them to give the operator enough context.
+
+```go
+func (s *UserService) Fetch(ctx context.Context, id string) (*User, error) {
+	if id == "" {
+		return nil, errors.InvalidRequest().WithDetail("violations", []any{
+			map[string]any{"field": "id", "message": "is required"},
+		})
+	}
+	user, err := s.storage.Fetch(ctx, id)
+	if err != nil {
+		// the wrapped coded error is still found by the transport and by errors.HasCode.
+		return nil, errors.Wrap(err, "fetching user")
+	}
+	return user, nil
 }
 ```
 
 ### Error at Handler layer
-The handler layer returns the errors as is: they are coded errors created by the lower layers (see below),
-the kit gRPC server sends them to the client and turns any other error into an `Internal` error.
+The handler layer returns the errors as is: the kit gRPC server sends the coded errors to the client and turns any
+other error into an `Internal` error.
 
 ```go
 func (h *grpcUser) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResponse, error) {
@@ -136,7 +117,7 @@ func (h *grpcUser) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchRe
 	if err != nil {
 		return nil, err
 	}
-	// ...
+	return &pb.FetchResponse{Name: user.Name}, nil
 }
 ```
 

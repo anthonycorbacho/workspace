@@ -1,11 +1,11 @@
-package blobminio
+package minio
 
 import (
 	"io"
 
 	"github.com/anthonycorbacho/workspace/kit/blob"
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/minio/minio-go/v7"
+	miniogo "github.com/minio/minio-go/v7"
 )
 
 var (
@@ -13,9 +13,9 @@ var (
 	_ io.ReadCloser  = (*read)(nil)
 )
 
-// write is a small wrapper around io.WriteCloser to handle the errors of minio
-// it is a bit more complicated because  minio does not return a io.Writer but take an io.Reader in parameters
-// so we use an in memory pipe. See io.Pipe() for doc
+// pipe is an io.WriteCloser feeding a MinIO upload.
+// MinIO does not return an io.Writer but takes an io.Reader, so the written data goes through an in memory pipe.
+// See io.Pipe for details.
 type pipe struct {
 	pr *io.PipeReader
 	pw *io.PipeWriter
@@ -36,9 +36,9 @@ func (w *pipe) finish(err error) {
 	close(w.finished)
 }
 
-// read is a small wrapper around io.WriteCloser to handle the errors of minio
+// read is a small wrapper around a MinIO object to convert its errors to blob errors.
 type read struct {
-	s *minio.Object
+	s *miniogo.Object
 }
 
 // Write implements io.WriteCloser
@@ -90,7 +90,7 @@ func toBlobErr(err error) error {
 		return err
 	}
 
-	mErr := minio.ToErrorResponse(err)
+	mErr := miniogo.ToErrorResponse(err)
 	switch mErr.Code {
 	case "NoSuchKey":
 		return errors.Wrapf(blob.ErrNotFound, "%s: %s", mErr.Message, mErr.Key)

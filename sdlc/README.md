@@ -7,6 +7,9 @@ SDLC is a folder that contains all the utilities tools, and documentation.
 - [errgen](documentation/application-error.md#coded-errors): generates the coded errors from
   `kit/errors/errors.defs.yaml` (`make errgen`).
 - [onboarding](onboarding/onboarding.sh): checks the tools required by the workspace (`make onboarding`).
+- [scripts/rename.sh](scripts/rename.sh): renames the Go module of the template, to start a new repository from it
+  (`make rename MODULE=github.com/acme/platform`). It replaces the module path (go.mod, imports, protos, linter
+  configuration, docs), the GitHub owner and repository (CODEOWNERS, badges), and regenerates the protobuf code.
 
 ### codegen
 `codegen` bootstraps a new project following the workspace conventions, the developer then builds the service

@@ -42,7 +42,7 @@ type Clock interface {
 // Note: MaxInterval caps the RetryInterval and not the randomized interval.
 //
 // If the time elapsed since an ExponentialBackOff instance is created goes past the
-// MaxElapsedTime, then the method NextBackOff() starts returning backoff.Stop.
+// MaxElapsedTime, then the method NextBackOff() starts returning the Stop field (retry.Stop by default).
 //
 // The elapsed time can be reset by calling Reset().
 //
@@ -60,7 +60,7 @@ type Clock interface {
 //	 7          5.692                   [2.846,  8.538]
 //	 8          8.538                   [4.269, 12.807]
 //	 9         12.807                   [6.403, 19.210]
-//	10         19.210                   backoff.Stop
+//	10         19.210                   Stop
 //
 // Note: Implementation is not thread-safe.
 type ExponentialBackOff struct {
@@ -80,11 +80,11 @@ type ExponentialBackOff struct {
 	startTime       time.Time
 }
 
-// ExponentialBackOffOpts is a function type used to configure ExponentialBackOff options.
-type ExponentialBackOffOpts func(*ExponentialBackOff)
+// ExponentialBackOffOption configures an ExponentialBackOff.
+type ExponentialBackOffOption func(*ExponentialBackOff)
 
 // NewExponentialBackOff creates an instance of ExponentialBackOff using default values.
-func NewExponentialBackOff(opts ...ExponentialBackOffOpts) *ExponentialBackOff {
+func NewExponentialBackOff(opts ...ExponentialBackOffOption) *ExponentialBackOff {
 	b := &ExponentialBackOff{
 		InitialInterval:     DefaultInitialInterval,
 		RandomizationFactor: DefaultRandomizationFactor,
@@ -102,35 +102,35 @@ func NewExponentialBackOff(opts ...ExponentialBackOffOpts) *ExponentialBackOff {
 }
 
 // WithInitialInterval sets the initial interval between retries.
-func WithInitialInterval(duration time.Duration) ExponentialBackOffOpts {
+func WithInitialInterval(duration time.Duration) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.InitialInterval = duration
 	}
 }
 
 // WithRandomizationFactor sets the randomization factor to add jitter to intervals.
-func WithRandomizationFactor(randomizationFactor float64) ExponentialBackOffOpts {
+func WithRandomizationFactor(randomizationFactor float64) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.RandomizationFactor = randomizationFactor
 	}
 }
 
 // WithMultiplier sets the multiplier for increasing the interval after each retry.
-func WithMultiplier(multiplier float64) ExponentialBackOffOpts {
+func WithMultiplier(multiplier float64) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.Multiplier = multiplier
 	}
 }
 
 // WithMaxInterval sets the maximum interval between retries.
-func WithMaxInterval(duration time.Duration) ExponentialBackOffOpts {
+func WithMaxInterval(duration time.Duration) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.MaxInterval = duration
 	}
 }
 
 // WithMaxElapsedTime sets the maximum total time for retries.
-func WithMaxElapsedTime(duration time.Duration) ExponentialBackOffOpts {
+func WithMaxElapsedTime(duration time.Duration) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.MaxElapsedTime = duration
 	}
@@ -140,14 +140,14 @@ func WithMaxElapsedTime(duration time.Duration) ExponentialBackOffOpts {
 //
 // By default it is retry.Stop and retries stop after MaxElapsedTime, any other value
 // keeps retrying forever with that delay between attempts (eg: 0 retries without delay).
-func WithRetryStopDuration(duration time.Duration) ExponentialBackOffOpts {
+func WithRetryStopDuration(duration time.Duration) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.Stop = duration
 	}
 }
 
 // WithClockProvider sets the clock used to measure time.
-func WithClockProvider(clock Clock) ExponentialBackOffOpts {
+func WithClockProvider(clock Clock) ExponentialBackOffOption {
 	return func(ebo *ExponentialBackOff) {
 		ebo.Clock = clock
 	}
@@ -174,7 +174,7 @@ func (b *ExponentialBackOff) Reset() {
 //	Randomized interval = RetryInterval * (1 ± RandomizationFactor)
 func (b *ExponentialBackOff) NextBackOff() time.Duration {
 	// Make sure we have not gone over the maximum elapsed time.
-	elapsed := b.GetElapsedTime()
+	elapsed := b.ElapsedTime()
 	next := getRandomValueFromInterval(b.RandomizationFactor, rand.Float64(), b.currentInterval)
 	b.incrementCurrentInterval()
 	if b.MaxElapsedTime != 0 && elapsed+next > b.MaxElapsedTime {
@@ -183,13 +183,9 @@ func (b *ExponentialBackOff) NextBackOff() time.Duration {
 	return next
 }
 
-// GetElapsedTime returns the elapsed time since an ExponentialBackOff instance
-// is created and is reset when Reset() is called.
-//
-// The elapsed time is computed using time.Now().UnixNano(). It is
-// safe to call even while the backoff policy is used by a running
-// ticker.
-func (b *ExponentialBackOff) GetElapsedTime() time.Duration {
+// ElapsedTime returns the time elapsed, according to Clock, since the ExponentialBackOff
+// was created or last Reset.
+func (b *ExponentialBackOff) ElapsedTime() time.Duration {
 	return b.Clock.Now().Sub(b.startTime)
 }
 

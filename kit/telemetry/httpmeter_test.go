@@ -17,6 +17,8 @@ import (
 	"github.com/slok/go-http-metrics/middleware"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
 // recorder records the request properties measured by the middleware.
@@ -145,6 +147,55 @@ func TestMiddleware(t *testing.T) {
 			assert.Equal(t, strconv.Itoa(tt.wantCode), rec.props[0].Code)
 			require.Len(t, rec.sizes, 1)
 			assert.Equal(t, tt.wantSize, rec.sizes[0])
+		})
+	}
+}
+
+// spanRecorder records the ended spans.
+type spanRecorder struct {
+	mu    sync.Mutex
+	spans []sdktrace.ReadOnlySpan
+}
+
+func (r *spanRecorder) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+func (r *spanRecorder) OnEnd(s sdktrace.ReadOnlySpan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.spans = append(r.spans, s)
+}
+func (r *spanRecorder) Shutdown(context.Context) error   { return nil }
+func (r *spanRecorder) ForceFlush(context.Context) error { return nil }
+
+func TestMiddlewareSpanName(t *testing.T) {
+	tests := []struct {
+		name      string
+		pattern   string
+		url       string
+		wantName  string
+		wantRoute string
+	}{
+		{name: "named after the route pattern", pattern: "GET /users/{id}", url: "/users/42", wantName: "GET /users/{id}", wantRoute: "/users/{id}"},
+		{name: "not routed falls back to url path", url: "/users/42", wantName: "GET /users/42", wantRoute: "/users/42"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spans := &spanRecorder{}
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+			_, m := newRecorder()
+			var h http.Handler = Middleware(m)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+			if tt.pattern != "" {
+				mux := http.NewServeMux()
+				mux.Handle(tt.pattern, h)
+				h = mux
+			}
+
+			ctx, span := tp.Tracer("test").Start(context.Background(), "GET")
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, tt.url, nil))
+			span.End()
+
+			require.Len(t, spans.spans, 1)
+			assert.Equal(t, tt.wantName, spans.spans[0].Name())
+			assert.Contains(t, spans.spans[0].Attributes(), semconv.HTTPRoute(tt.wantRoute))
 		})
 	}
 }

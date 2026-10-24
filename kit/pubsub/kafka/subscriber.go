@@ -4,24 +4,34 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/twmb/franz-go/pkg/kgo"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
 var _ pubsub.Subscriber = (*Subscriber)(nil)
 
-type regexHandler struct {
-	re      *regexp.Regexp
+// subscription is the handler of a subscription and the context of the records it handles.
+type subscription struct {
+	// ctx holds the values of the context given to SubscribeWithAck, not its cancellation:
+	// the subscription lasts until the subscriber is closed.
+	ctx     context.Context
 	handler pubsub.HandlerWithAck
 }
 
-// Subscriber attaches to a kafka subscription.
+// regexHandler is a subscription to the topics matching a regex.
+type regexHandler struct {
+	re *regexp.Regexp
+	subscription
+}
+
+// Subscriber consumes Kafka topics, the records are polled in the background until Close.
 type Subscriber struct {
 	closed    bool
 	closeLock sync.RWMutex
@@ -30,34 +40,38 @@ type Subscriber struct {
 	cancel    context.CancelFunc
 
 	muHandlerByTopic sync.RWMutex
-	handlerByTopic   map[string]pubsub.HandlerWithAck
+	handlerByTopic   map[string]subscription
 
 	muHandlerByRegex sync.RWMutex
 	handlerByRegex   map[string]regexHandler
+
+	rewinds *rewinder
 }
 
-// NewSubscriber creates a new Kafka subscriber.
+// NewSubscriber creates a Kafka subscriber using client, it starts polling the records.
 //
-// It requires a call to Close in order to stop processing messages.
+// Close must be called to stop polling and close the client.
 func NewSubscriber(client *Client) (*Subscriber, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
 	}
 
+	// the poller lasts until Close, there is no caller context to derive it from.
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Subscriber{
 		client:         client,
 		ctx:            ctx,
 		cancel:         cancel,
-		handlerByTopic: make(map[string]pubsub.HandlerWithAck),
+		handlerByTopic: make(map[string]subscription),
 		handlerByRegex: make(map[string]regexHandler),
+		rewinds:        newRewinder(),
 	}
 	go s.poller()
 
 	return s, nil
 }
 
-// Close notifies the Subscriber to stop processing messages and close the connection.
+// Close stops polling the records and closes the client.
 func (s *Subscriber) Close() error {
 	if !s.markClosed() {
 		return nil
@@ -67,17 +81,23 @@ func (s *Subscriber) Close() error {
 	return nil
 }
 
+// Subscribe subscribes to the subscription topic (or regex, see WithRegex).
+//
+// A record is acked once the handler succeeded, it is nacked when the handler failed (see SubscribeWithAck).
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler pubsub.Handler) error {
-	h := func(ctx context.Context, msg pubsub.Message, metadata map[string]string, ack func(), _ func()) error {
-		// default behavior is to always ack.
-		err := handler(ctx, msg, metadata)
-		ack()
-		return err
-	}
-	return s.SubscribeWithAck(ctx, subscription, h)
+	return s.SubscribeWithAck(ctx, subscription, pubsub.AckOnSuccess(handler))
 }
 
-func (s *Subscriber) SubscribeWithAck(_ context.Context, subscription string, handler pubsub.HandlerWithAck) error {
+// SubscribeWithAck subscribes to the subscription topic (or regex, see WithRegex).
+//
+// Kafka acknowledges the records of a partition in order: acking a record commits its offset
+// (marks it with WithAutoCommit), acknowledging the previous records of the partition too.
+// Nacking a record rewinds its partition: the record and the following ones are consumed again,
+// the acks of the records of the partition delivered before the nack are ignored.
+//
+// The context of the handled records holds the values of ctx (eg: logger fields, baggage) but the
+// subscription is not canceled with ctx, it lasts until the subscriber is closed.
+func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
 	if s.isClosed() {
 		return pubsub.ErrSubscriberClosed
 	}
@@ -86,12 +106,13 @@ func (s *Subscriber) SubscribeWithAck(_ context.Context, subscription string, ha
 		return pubsub.ErrNilTopic
 	}
 
+	sub := newSubscription(ctx, handler)
 	if s.client.regexEnabled {
-		if err := s.registerHandlerByRegex(subscription, handler); err != nil {
+		if err := s.registerHandlerByRegex(subscription, sub); err != nil {
 			return err
 		}
 	} else {
-		s.registerHandlerByTopic(subscription, handler)
+		s.registerHandlerByTopic(subscription, sub)
 		s.client.client.AddConsumeTopics(subscription)
 	}
 
@@ -117,78 +138,87 @@ func (s *Subscriber) poller() {
 
 			// Log partition errors but continue processing
 			fetches.EachError(func(topic string, partition int32, err error) {
-				_, span := tracer.Start(s.ctx, fmt.Sprintf("subscription error %s", topic))
-				span.SetAttributes(
-					attribute.String("topic", topic),
-					attribute.Int("partition", int(partition)),
-				)
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
+				_, span := tracer.Start(s.ctx, "subscription error "+topic, trace.WithAttributes(
+					semconv.MessagingSystemKafka,
+					semconv.MessagingDestinationName(topic),
+					semconv.MessagingDestinationPartitionID(strconv.Itoa(int(partition))),
+				))
+				tracing.RecordError(span, err)
 				span.End()
 			})
 
-			fetches.EachRecord(func(record *kgo.Record) {
-				ctx := contextFromTracingAttributes(context.Background(), record.Headers)
-				topic := record.Topic
-				ctx = pubsub.WithTopic(ctx, topic)
+			fetches.EachRecord(s.handleRecord)
 
-				var span trace.Span
-				ctx, span = tracer.Start(ctx, fmt.Sprintf("subscription %s", topic))
-				defer span.End()
-
-				handler, err := s.resolveHandlerForTopic(topic)
-				if err != nil {
-					span.RecordError(err)
-					span.SetStatus(codes.Error, err.Error())
-					return
-				}
-
-				span.SetAttributes(
-					attribute.String("topic", topic),
-					attribute.Int("partition", int(record.Partition)),
-					attribute.Int64("offset", record.Offset),
-				)
-
-				// Create metadata from headers
-				metadata := map[string]string{
-					"topic":     topic,
-					"partition": fmt.Sprintf("%d", record.Partition),
-					"offset":    fmt.Sprintf("%d", record.Offset),
-				}
-				for _, h := range record.Headers {
-					metadata[h.Key] = string(h.Value)
-				}
-
-				ack := func() {
-					if s.client.autoCommitEnabled {
-						s.client.client.MarkCommitRecords(record)
-					} else {
-						if err := s.client.client.CommitRecords(ctx, record); err != nil {
-							span.RecordError(err)
-							span.SetStatus(codes.Error, err.Error())
-						}
-					}
-				}
-
-				nack := func() {}
-
-				if err := handler(ctx, record.Value, metadata, ack, nack); err != nil {
-					span.RecordError(err)
-					span.SetStatus(codes.Error, err.Error())
-				}
-			})
+			// set between the polls, it discards the records buffered after the rewound offsets.
+			s.client.client.SetOffsets(s.rewinds.rewind())
 		}
 	}
 }
 
-func (s *Subscriber) registerHandlerByTopic(topic string, handler pubsub.HandlerWithAck) {
+// handleRecord handles record with the subscription of its topic.
+func (s *Subscriber) handleRecord(record *kgo.Record) {
+	generation, skip := s.rewinds.deliver(record)
+	if skip {
+		// the partition is rewound to a nacked record before it.
+		return
+	}
+
+	sub, err := s.resolveHandlerForTopic(record.Topic)
+	if err != nil {
+		_, span := startProcessSpan(s.ctx, tracer, record)
+		tracing.RecordError(span, err)
+		span.End()
+		return
+	}
+
+	ctx, span := startProcessSpan(sub.ctx, tracer, record)
+	defer span.End()
+	ctx = pubsub.WithTopic(ctx, record.Topic)
+
+	// Create metadata from headers
+	metadata := map[string]string{
+		"topic":     record.Topic,
+		"partition": strconv.Itoa(int(record.Partition)),
+		"offset":    strconv.FormatInt(record.Offset, 10),
+	}
+	for _, h := range record.Headers {
+		metadata[h.Key] = string(h.Value)
+	}
+
+	ack := func() {
+		s.rewinds.ack(record, generation, func() {
+			if s.client.autoCommitEnabled {
+				s.client.client.MarkCommitRecords(record)
+				return
+			}
+			if err := s.client.client.CommitRecords(ctx, record); err != nil {
+				tracing.RecordError(span, err)
+			}
+		})
+	}
+
+	nack := func() {
+		s.rewinds.nack(record, generation)
+	}
+
+	if err := sub.handler(ctx, record.Value, metadata, ack, nack); err != nil {
+		tracing.RecordError(span, err)
+	}
+}
+
+// newSubscription returns the subscription of handler, the records are handled with the values of ctx.
+func newSubscription(ctx context.Context, handler pubsub.HandlerWithAck) subscription {
+	return subscription{ctx: context.WithoutCancel(ctx), handler: handler}
+}
+
+func (s *Subscriber) registerHandlerByTopic(topic string, sub subscription) {
 	s.muHandlerByTopic.Lock()
 	defer s.muHandlerByTopic.Unlock()
 
-	s.handlerByTopic[topic] = handler
+	s.handlerByTopic[topic] = sub
 }
 
-func (s *Subscriber) registerHandlerByRegex(regex string, handler pubsub.HandlerWithAck) error {
+func (s *Subscriber) registerHandlerByRegex(regex string, sub subscription) error {
 	if _, ok := s.client.regexPatterns[regex]; !ok {
 		return fmt.Errorf("regex %s is not configured in the subscriber", regex)
 	}
@@ -202,14 +232,14 @@ func (s *Subscriber) registerHandlerByRegex(regex string, handler pubsub.Handler
 	defer s.muHandlerByRegex.Unlock()
 
 	s.handlerByRegex[regex] = regexHandler{
-		re:      re,
-		handler: handler,
+		re:           re,
+		subscription: sub,
 	}
 
 	return nil
 }
 
-func (s *Subscriber) resolveHandlerForTopic(topic string) (pubsub.HandlerWithAck, error) {
+func (s *Subscriber) resolveHandlerForTopic(topic string) (subscription, error) {
 	if s.client.regexEnabled {
 		// Try to lookup the handler by topic first
 		if h, err := s.lookupHandlerByTopic(topic); err == nil {
@@ -219,7 +249,7 @@ func (s *Subscriber) resolveHandlerForTopic(topic string) (pubsub.HandlerWithAck
 		// If no handler is found by topic, find the matching handler from the regexes
 		h, err := s.matchHandlerByRegex(topic)
 		if err != nil {
-			return nil, err
+			return subscription{}, err
 		}
 
 		// Register the handler by topic to avoid future lookups
@@ -238,29 +268,29 @@ func (s *Subscriber) regexHandlerCount() int {
 	return len(s.handlerByRegex)
 }
 
-func (s *Subscriber) lookupHandlerByTopic(topic string) (pubsub.HandlerWithAck, error) {
+func (s *Subscriber) lookupHandlerByTopic(topic string) (subscription, error) {
 	s.muHandlerByTopic.RLock()
 	defer s.muHandlerByTopic.RUnlock()
 
 	h, ok := s.handlerByTopic[topic]
 	if !ok {
-		return nil, fmt.Errorf("handler not found for topic %s", topic)
+		return subscription{}, fmt.Errorf("handler not found for topic %s", topic)
 	}
 
 	return h, nil
 }
 
-func (s *Subscriber) matchHandlerByRegex(topic string) (pubsub.HandlerWithAck, error) {
+func (s *Subscriber) matchHandlerByRegex(topic string) (subscription, error) {
 	s.muHandlerByRegex.RLock()
 	defer s.muHandlerByRegex.RUnlock()
 
 	for _, rh := range s.handlerByRegex {
 		if rh.re.MatchString(topic) {
-			return rh.handler, nil
+			return rh.subscription, nil
 		}
 	}
 
-	return nil, fmt.Errorf("handler not found for topic %s", topic)
+	return subscription{}, fmt.Errorf("handler not found for topic %s", topic)
 }
 
 // markClosed marks the subscriber as closed, it reports false if it was already closed

@@ -2,7 +2,9 @@ package log
 
 import (
 	"context"
+	"os"
 	"runtime"
+	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/config"
 	"go.opentelemetry.io/otel/trace"
@@ -17,11 +19,11 @@ type Logger struct {
 }
 
 // New is a reasonable production logging configuration.
-// Logging is enabled at InfoLevel and above by default.
+// Logging is enabled at InfoLevel and above by default (FOUNDATION_LOG_LEVEL, WithLevel).
 //
-// It uses a JSON encoder, writes to standard error, and enables sampling.
+// It uses a JSON encoder, writes to standard error (WithOutput), and enables sampling.
 // Stacktraces are automatically included on logs of ErrorLevel and above.
-func New(opts ...func(*Option)) (*Logger, error) {
+func New(opts ...Option) (*Logger, error) {
 	envLevel := config.LookupEnv("FOUNDATION_LOG_LEVEL", "")
 	if len(envLevel) == 0 {
 		envLevel = "INFO"
@@ -31,40 +33,26 @@ func New(opts ...func(*Option)) (*Logger, error) {
 		return nil, err
 	}
 
-	options := &Option{Level: level}
-	for _, o := range opts {
-		o(options)
+	o := defaultOptions(level)
+	for _, opt := range opts {
+		opt(o)
 	}
 
-	config := zap.Config{
-		Level:       zap.NewAtomicLevelAt(zapcore.Level(options.Level)),
-		Development: false,
-		Sampling: &zap.SamplingConfig{
-			Initial:    100,
-			Thereafter: 100,
-		},
-		Encoding: "json",
-		EncoderConfig: zapcore.EncoderConfig{
-			TimeKey:       "Timestamp",
-			LevelKey:      "Severity",
-			FunctionKey:   zapcore.OmitKey,
-			MessageKey:    "Body",
-			StacktraceKey: "Stacktrace",
-			LineEnding:    zapcore.DefaultLineEnding,
-			EncodeLevel:   zapcore.CapitalLevelEncoder,
-			EncodeTime:    zapcore.EpochNanosTimeEncoder,
-		},
-		OutputPaths:      []string{"stderr"},
-		ErrorOutputPaths: []string{"stderr"},
-	}
-
-	log, err := config.Build()
-	if err != nil {
-		return nil, err
-	}
+	encoder := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+		TimeKey:       "Timestamp",
+		LevelKey:      "Severity",
+		FunctionKey:   zapcore.OmitKey,
+		MessageKey:    "Body",
+		StacktraceKey: "Stacktrace",
+		LineEnding:    zapcore.DefaultLineEnding,
+		EncodeLevel:   zapcore.CapitalLevelEncoder,
+		EncodeTime:    zapcore.EpochNanosTimeEncoder,
+	})
+	core := zapcore.NewCore(encoder, zapcore.Lock(zapcore.AddSync(o.output)), zap.NewAtomicLevelAt(zapcore.Level(o.level)))
+	core = zapcore.NewSamplerWithOptions(core, time.Second, 100, 100)
 
 	return &Logger{
-		log: log,
+		log: zap.New(core, zap.ErrorOutput(zapcore.Lock(os.Stderr)), zap.AddStacktrace(zapcore.ErrorLevel)),
 	}, nil
 }
 

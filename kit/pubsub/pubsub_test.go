@@ -11,12 +11,12 @@ import (
 
 func TestCtx(t *testing.T) {
 	ctx := WithTopic(context.Background(), "a.topic")
-	topic := GetTopic(ctx)
+	topic := Topic(ctx)
 
 	assert.Equal(t, "a.topic", topic)
 }
 
-func TestGetTopic(t *testing.T) {
+func TestTopic(t *testing.T) {
 	tests := []struct {
 		name string
 		ctx  context.Context
@@ -29,7 +29,7 @@ func TestGetTopic(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, GetTopic(tt.ctx))
+			assert.Equal(t, tt.want, Topic(tt.ctx))
 		})
 	}
 }
@@ -113,7 +113,41 @@ func TestError(t *testing.T) {
 	}
 }
 
-func TestDeprecatedErrors(t *testing.T) {
-	assert.ErrorIs(t, PublisherClosed, ErrPublisherClosed)
-	assert.ErrorIs(t, SubscriberCLosed, ErrSubscriberClosed)
+func TestAckOnSuccess(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantAck  bool
+		wantNack bool
+	}{
+		{name: "handler succeeded", wantAck: true},
+		{name: "handler failed", err: errors.New("failed"), wantNack: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []string
+			handler := func(ctx context.Context, msg Message, metadata map[string]string) error {
+				calls = append(calls, "handler")
+				assert.Equal(t, "orders", Topic(ctx))
+				assert.Equal(t, Message("hello"), msg)
+				assert.Equal(t, map[string]string{"k": "v"}, metadata)
+				return tt.err
+			}
+			ack := func() { calls = append(calls, "ack") }
+			nack := func() { calls = append(calls, "nack") }
+
+			err := AckOnSuccess(handler)(WithTopic(context.Background(), "orders"), Message("hello"), map[string]string{"k": "v"}, ack, nack)
+			assert.ErrorIs(t, err, tt.err)
+
+			// the message is acknowledged once processed.
+			want := []string{"handler"}
+			if tt.wantAck {
+				want = append(want, "ack")
+			}
+			if tt.wantNack {
+				want = append(want, "nack")
+			}
+			assert.Equal(t, want, calls)
+		})
+	}
 }

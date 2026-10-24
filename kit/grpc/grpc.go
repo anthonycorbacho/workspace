@@ -9,6 +9,8 @@ import (
 	grpcrecovery "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	grpcretry "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/retry"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/metric/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
@@ -37,31 +39,44 @@ func InitializeMetrics(srv *grpc.Server) {
 	srvMetrics.InitializeMetrics(srv)
 }
 
+// otelgrpcOptions are the options of the tracing stats handlers, their metrics are disabled since
+// the prometheus interceptors already record them.
+func otelgrpcOptions() []otelgrpc.Option {
+	return []otelgrpc.Option{otelgrpc.WithMeterProvider(noop.NewMeterProvider())}
+}
+
 // NewServer creates a gRPC server that will be by default
-// recover from panic and setup for observability.
+// recover from panic and setup for observability: traces (continuing the trace of the client, see
+// telemetry.NewTracer), prometheus metrics and logs.
 //
 // The errors returned to the client are coded errors (see kit/errors): the handlers errors are converted
 // with errors.FromError (a plain error becomes an Internal error, logged but never sent to the client),
 // the invalid requests are rejected with an InvalidRequest error listing the violations.
-func NewServer(opts ...grpc.ServerOption) *grpc.Server {
+//
+// The server errors and the recovered panics are logged with l, the global logger is used if l is nil.
+func NewServer(l *log.Logger, opts ...grpc.ServerOption) *grpc.Server {
+	if l == nil {
+		l = log.L()
+	}
 	// Create a default server opts and set our default chain of interceptor
 	// if user decide to pass a custom interceptor via `grpc.ChainXXXInterceptor` or grpc.XXXInterceptor,
 	// it should be added at the end of the call chain since
 	// interpreter call chain is from left to right.
 	// The error interceptor is after the metrics one, so the metrics record the status sent to the client.
 	srvMetrics, _ := metrics()
-	recovery := grpcrecovery.WithRecoveryHandlerContext(recoverFrom(log.L()))
+	recovery := grpcrecovery.WithRecoveryHandlerContext(recoverFrom(l))
 	serverOpts := []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler(otelgrpcOptions()...)),
 		grpc.ChainStreamInterceptor(
 			grpcrecovery.StreamServerInterceptor(recovery),
 			srvMetrics.StreamServerInterceptor(),
-			streamServerErrorInterceptor(log.L()),
+			streamServerErrorInterceptor(l),
 			streamServerValidatorInterceptor(),
 		),
 		grpc.ChainUnaryInterceptor(
 			grpcrecovery.UnaryServerInterceptor(recovery),
 			srvMetrics.UnaryServerInterceptor(),
-			unaryServerErrorInterceptor(log.L()),
+			unaryServerErrorInterceptor(l),
 			unaryServerValidatorInterceptor(),
 		),
 	}
@@ -71,7 +86,7 @@ func NewServer(opts ...grpc.ServerOption) *grpc.Server {
 	return srv
 }
 
-// NewClient create a new gRPC client setup for observability and retry.
+// NewClient create a new gRPC client setup for observability (the trace is propagated to the server) and retry.
 //
 // By default, the reties *are disabled*, preventing accidental use of retries. You can easily
 // override the number of retries (setting them to more than 0) with a `grpc.ClientOption`, e.g.:
@@ -90,6 +105,7 @@ func NewClient(addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	// The errors received from the server are converted to coded errors (see kit/errors) once retried.
 	_, clMetrics := metrics()
 	dialOps := []grpc.DialOption{
+		grpc.WithStatsHandler(otelgrpc.NewClientHandler(otelgrpcOptions()...)),
 		grpc.WithChainUnaryInterceptor(
 			unaryClientErrorInterceptor(),
 			grpcretry.UnaryClientInterceptor(),

@@ -1,42 +1,43 @@
-package pubsubconfig
+package config
 
 import (
 	"context"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/anthonycorbacho/workspace/kit/log"
 	kitpubsub "github.com/anthonycorbacho/workspace/kit/pubsub"
 	kitmqtt "github.com/anthonycorbacho/workspace/kit/pubsub/mqtt"
 )
 
-// MqttConnection is a mqtt connection configuration.
-type MqttConnection struct {
-	Addr     string `yaml:"addr" env:"MQTT_ADDR,overwrite,default=mqtt://localhost:1883"`
+// MQTTConnection is a MQTT connection configuration, shared by the publisher and the subscriber.
+type MQTTConnection struct {
+	// Addr is the broker address.
+	Addr string `yaml:"addr" env:"MQTT_ADDR,overwrite,default=mqtt://localhost:1883"`
+	// User and Password authenticate the connection when User is set.
 	User     string `yaml:"user" env:"MQTT_USER,overwrite"`
 	Password string `yaml:"password" env:"MQTT_PASSWORD,overwrite"`
 }
 
-// MqttPublisher is a mqtt publisher configuration.
-type MqttPublisher struct {
-	MqttConnection `yaml:",inline"`
+// MQTTPublisher is a mqtt publisher configuration.
+type MQTTPublisher struct {
+	MQTTConnection `yaml:",inline"`
 }
 
-// MqttSubscriber is a mqtt subscriber configuration.
-type MqttSubscriber struct {
-	MqttConnection `yaml:",inline"`
+// MQTTSubscriber is a mqtt subscriber configuration.
+type MQTTSubscriber struct {
+	MQTTConnection `yaml:",inline"`
 }
 
-func (c *MqttConnection) client(clientID string) (*kitmqtt.Client, error) {
+func (c *MQTTConnection) client(ctx context.Context, clientID string) (*kitmqtt.Client, error) {
 	var opts []kitmqtt.Option
 	if len(c.User) != 0 {
 		opts = append(opts, kitmqtt.WithUser(c.User), kitmqtt.WithPassword(c.Password))
 	}
-	return kitmqtt.NewClient(c.Addr, clientID, opts...)
+	return kitmqtt.NewClient(ctx, c.Addr, clientID, opts...)
 }
 
-func (m *MqttPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, func(), error) {
+func (m *MQTTPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, func(), error) {
 	noop := func() {}
-	client, err := m.client(clientID("publisher"))
+	client, err := m.client(ctx, clientID("publisher"))
 	if err != nil {
 		return nil, noop, errors.Wrap(err, "failed to create mqtt client")
 	}
@@ -45,17 +46,12 @@ func (m *MqttPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, fun
 		closeClient(ctx, func() error { return client.Disconnect(ctx) })
 		return nil, noop, err
 	}
-	closeFn := func() {
-		if err := pub.Close(); err != nil {
-			log.L().Warn(ctx, "failed to close mqtt pub", log.Error(err))
-		}
-	}
-	return pub, closeFn, nil
+	return pub, closer(ctx, "mqtt publisher", pub.Close), nil
 }
 
-func (m *MqttSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
+func (m *MQTTSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, func(), error) {
 	noop := func() {}
-	client, err := m.client(clientID("subscriber"))
+	client, err := m.client(ctx, clientID("subscriber"))
 	if err != nil {
 		return nil, noop, errors.Wrap(err, "failed to create mqtt client")
 	}
@@ -64,10 +60,5 @@ func (m *MqttSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber, 
 		closeClient(ctx, func() error { return client.Disconnect(ctx) })
 		return nil, noop, err
 	}
-	closeFn := func() {
-		if err := sub.Close(); err != nil {
-			log.L().Warn(ctx, "failed to close mqtt sub", log.Error(err))
-		}
-	}
-	return sub, closeFn, nil
+	return sub, closer(ctx, "mqtt subscriber", sub.Close), nil
 }

@@ -2,13 +2,14 @@ package retry
 
 import "time"
 
-type Timer interface {
+// timer waits between retries, it is an interface so tests can fire immediately.
+type timer interface {
 	Start(duration time.Duration)
 	Stop()
 	C() <-chan time.Time
 }
 
-// defaultTimer implements Timer interface using time.Timer
+// defaultTimer implements timer using time.Timer.
 type defaultTimer struct {
 	timer *time.Timer
 }

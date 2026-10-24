@@ -1,16 +1,24 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	pb "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1"
+	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -27,9 +35,22 @@ func (panicHealthServer) Check(context.Context, *healthpb.HealthCheckRequest) (*
 	panic("boom")
 }
 
+type errorHealthServer struct {
+	healthpb.UnimplementedHealthServer
+}
+
+func (errorHealthServer) Check(context.Context, *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	return nil, errors.New("connection refused")
+}
+
 func startServer(t *testing.T, register func(*grpc.Server)) *grpc.ClientConn {
 	t.Helper()
-	srv := NewServer()
+	return startServerWithLogger(t, nil, register)
+}
+
+func startServerWithLogger(t *testing.T, l *log.Logger, register func(*grpc.Server)) *grpc.ClientConn {
+	t.Helper()
+	srv := NewServer(l)
 	register(srv)
 	InitializeMetrics(srv)
 
@@ -71,6 +92,101 @@ func TestServerRecoverFromPanic(t *testing.T) {
 
 	_, err := healthpb.NewHealthClient(cc).Check(context.Background(), &healthpb.HealthCheckRequest{})
 	assert.Equal(t, codes.Internal, status.Code(err))
+}
+
+// syncBuffer is a concurrent safe buffer used as log output.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestServerLogger(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler healthpb.HealthServer
+		wantLog string
+	}{
+		{name: "panic", handler: panicHealthServer{}, wantLog: "grpc recover panic"},
+		{name: "internal error", handler: errorHealthServer{}, wantLog: "grpc request failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := &syncBuffer{}
+			l, err := log.New(log.WithOutput(out))
+			require.NoError(t, err)
+			cc := startServerWithLogger(t, l, func(srv *grpc.Server) {
+				healthpb.RegisterHealthServer(srv, tt.handler)
+			})
+
+			_, err = healthpb.NewHealthClient(cc).Check(context.Background(), &healthpb.HealthCheckRequest{})
+			assert.Equal(t, codes.Internal, status.Code(err))
+			assert.Contains(t, out.String(), tt.wantLog)
+		})
+	}
+}
+
+// spanRecorder records the ended spans.
+type spanRecorder struct {
+	mu    sync.Mutex
+	spans []sdktrace.ReadOnlySpan
+}
+
+func (r *spanRecorder) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+func (r *spanRecorder) OnEnd(s sdktrace.ReadOnlySpan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.spans = append(r.spans, s)
+}
+func (r *spanRecorder) Shutdown(context.Context) error   { return nil }
+func (r *spanRecorder) ForceFlush(context.Context) error { return nil }
+
+func (r *spanRecorder) byKind() map[trace.SpanKind]sdktrace.ReadOnlySpan {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	spans := map[trace.SpanKind]sdktrace.ReadOnlySpan{}
+	for _, s := range r.spans {
+		spans[s.SpanKind()] = s
+	}
+	return spans
+}
+
+func TestTracePropagation(t *testing.T) {
+	spans := &spanRecorder{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans))
+	prevTP, prevProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	cc := startServer(t, func(srv *grpc.Server) {
+		healthpb.RegisterHealthServer(srv, health.NewServer())
+	})
+	_, err := healthpb.NewHealthClient(cc).Check(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+
+	// the server span ends after the response is sent.
+	require.Eventually(t, func() bool { return len(spans.byKind()) == 2 }, time.Second, 10*time.Millisecond)
+	client, server := spans.byKind()[trace.SpanKindClient], spans.byKind()[trace.SpanKindServer]
+	require.NotNil(t, client)
+	require.NotNil(t, server)
+	assert.Equal(t, "grpc.health.v1.Health/Check", server.Name())
+	assert.Equal(t, client.SpanContext().TraceID(), server.SpanContext().TraceID(), "one trace")
+	assert.Equal(t, client.SpanContext().SpanID(), server.Parent().SpanID(), "the server span is a child of the client span")
 }
 
 // sampleServer calls fetch for every Fetch request, with the attempt number starting at 1.

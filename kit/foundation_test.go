@@ -162,7 +162,7 @@ func serveWithTimeout(t *testing.T, f *Foundation) error {
 
 func TestServeGRPCAddressInUse(t *testing.T) {
 	f, err := NewFoundation("test",
-		WithGrpcAddr(busyAddr(t)),
+		WithGRPCAddr(busyAddr(t)),
 		WithProbesAddr(freeAddr(t)),
 		WithMetricsAddr(freeAddr(t)),
 	)
@@ -188,7 +188,7 @@ func TestServeMetricsAddressInUse(t *testing.T) {
 func TestServeAndShutdown(t *testing.T) {
 	probesAddr, metricsAddr, grpcAddr := freeAddr(t), freeAddr(t), freeAddr(t)
 	f, err := NewFoundation("test",
-		WithGrpcAddr(grpcAddr),
+		WithGRPCAddr(grpcAddr),
 		WithHTTPAddr(freeAddr(t)),
 		WithProbesAddr(probesAddr),
 		WithMetricsAddr(metricsAddr),
@@ -332,14 +332,14 @@ func (metadataServer) Delete(context.Context, *pb.DeleteRequest) (*pb.DeleteResp
 
 func TestGatewayMetadata(t *testing.T) {
 	// start a gRPC server serving the sample app.
-	srv := grpckit.NewServer()
+	srv := grpckit.NewServer(nil)
 	pb.RegisterSampleAppServiceServer(srv, metadataServer{})
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(srv.Stop)
 
-	f, err := NewFoundation("test", WithGrpcAddr(lis.Addr().String()))
+	f, err := NewFoundation("test", WithGRPCAddr(lis.Addr().String()))
 	require.NoError(t, err)
 	f.RegisterServiceHandler(func(gw *runtime.ServeMux, conn *grpc.ClientConn) {
 		require.NoError(t, pb.RegisterSampleAppServiceHandler(context.Background(), gw, conn))
@@ -371,7 +371,7 @@ func TestGatewayMetadata(t *testing.T) {
 			wantMD: map[string][]string{
 				"x-request-id": {"req-1"},
 				"method":       {http.MethodGet},
-				"pattern":      {"/v1/users/abcd?foo=bar&foo=baz"},
+				"pattern":      {"/v1/users/{id}"},
 				"query-params": {`{"foo":["bar","baz"]}`},
 			},
 			notWantMD: []string{"custom-header", "grpcgateway-custom-header"},
@@ -447,7 +447,7 @@ func TestServeErrors(t *testing.T) {
 	}{
 		{
 			name:    "invalid grpc gateway address",
-			options: []Option{WithGrpcAddr("%zz")},
+			options: []Option{WithGRPCAddr("%zz")},
 			setup: func(f *Foundation) {
 				f.RegisterServiceHandler(func(*runtime.ServeMux, *grpc.ClientConn) {
 					t.Error("handler must not be registered without a grpc client")

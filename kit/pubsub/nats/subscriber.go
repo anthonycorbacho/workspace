@@ -8,10 +8,8 @@ import (
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	nats "github.com/nats-io/nats.go"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var _ pubsub.Subscriber = (*Subscriber)(nil)
@@ -32,9 +30,10 @@ type Subscriber struct {
 	js         nats.JetStreamContext
 }
 
-// NewSubscriber creates a new Nats Subscriber.
+// NewSubscriber creates a NATS JetStream subscriber using the connection natsClient and its
+// JetStream context jetStreamCtx, the subscriptions are bound to consumer and join queueGroup.
 //
-// it required a call to Close in order to stop processing messages and close subscriber connections.
+// Close must be called to stop receiving messages and close the connection.
 func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.JetStreamContext, consumer *nats.ConsumerInfo) (*Subscriber, error) {
 	if len(queueGroup) == 0 {
 		return nil, errors.New("invalid queueGroup")
@@ -85,16 +84,16 @@ func (s *Subscriber) Close() error {
 // IMPORTANT! Don't forget to filter messages on the consumer as subscriber's subscription doesn't seem to take priority.
 // Depending on the Consumer `DeliverPolicy`, `all`, `last`, `new`, `by_start_time`, `by_start_sequence`
 // persisted messages can be received
+//
+// A message is acked once the handler succeeded, it is nacked and redelivered when the handler failed.
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subject */, handler pubsub.Handler) error {
-	h := func(ctx context.Context, msg pubsub.Message, metadata map[string]string, ack func(), nack func()) error {
-		// default behavior is to always ack.
-		ack()
-		return handler(ctx, msg, metadata)
-	}
-
-	return s.SubscribeWithAck(ctx, subscription, h)
+	return s.SubscribeWithAck(ctx, subscription, pubsub.AckOnSuccess(handler))
 }
 
+// SubscribeWithAck consumes the NATS subject like Subscribe, the handler acknowledges the messages.
+// A message that is neither acked nor nacked is redelivered once the consumer AckWait expired.
+//
+// The messages received once ctx is done or the subscriber is closed are nacked.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
 	if s.isClosed() || s.nc.IsClosed() {
 		return pubsub.ErrSubscriberClosed
@@ -134,21 +133,18 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 		// no-oop: responsibility of the caller
 	}
 
-	// recreate the context with traces
-	firstHeaders := make(map[string]string)
-	for k, v := range msg.Header {
-		firstHeaders[k] = v[0]
-	}
-	ctx = contextFromTracingAttributes(ctx, firstHeaders)
-
+	ctx, span := startProcessSpan(ctx, tracer, msg)
+	defer span.End()
 	// Add to the context the topic (subject).
 	ctx = pubsub.WithTopic(ctx, msg.Subject)
 
-	// annotate the span
-	var span trace.Span
-	ctx, span = tracer.Start(ctx, fmt.Sprintf("Subscription %s", msg.Subject))
-	span.SetAttributes(attribute.String("topic", msg.Subject))
-	defer span.End()
+	// the handler receives the first value of the headers.
+	metadata := make(map[string]string, len(msg.Header))
+	for k, v := range msg.Header {
+		if len(v) > 0 {
+			metadata[k] = v[0]
+		}
+	}
 
 	ack := func() {
 		if err := msg.Ack(); err != nil {
@@ -163,10 +159,8 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 
 	// Process the message
 	// in case of error, we record and label the error in the span.
-	err := handler(ctx, msg.Data, firstHeaders, ack, nack)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	if err := handler(ctx, msg.Data, metadata, ack, nack); err != nil {
+		tracing.RecordError(span, err)
 	}
 }
 

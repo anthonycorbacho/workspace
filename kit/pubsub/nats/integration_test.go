@@ -11,6 +11,7 @@ import (
 	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,8 +38,25 @@ type natsTestSuite struct {
 	errCh    chan error
 }
 
-func TestNatsTestSuite(t *testing.T) {
+func TestNATSTestSuite(t *testing.T) {
 	suite.Run(t, new(natsTestSuite))
+}
+
+// connect connects to the NATS server at url, the options are applied to the connection.
+func connect(url string, options ...func(*nats.Conn)) (nats.JetStreamContext, *nats.Conn, error) {
+	nc, err := nats.Connect(url)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, option := range options {
+		option(nc)
+	}
+	js, err := nc.JetStream()
+	if err != nil {
+		nc.Close()
+		return nil, nil, err
+	}
+	return js, nc, nil
 }
 
 func errorHandler(errCh chan error) func(*nats.Conn) {
@@ -61,6 +79,8 @@ func (n *natsTestSuite) SetupSuite() {
 		n.T().Skip("Skipping, no testing nats setup via env variable TESTINGNATS_URL")
 	}
 	ctx := context.Background()
+	// the trace context is propagated with the global propagator, set by kit/telemetry.
+	tracingtest.UsePropagator(n.T())
 	// Initiate a logger with pre-configuration for production and telemetry.
 	l, err := log.New()
 	if err != nil {
@@ -72,7 +92,7 @@ func (n *natsTestSuite) SetupSuite() {
 	errCh := make(chan error, 1)
 	addr, _ := os.LookupEnv("TESTINGNATS_URL")
 
-	js, nc, err := New(addr, errorHandler(errCh), closedHandler(&wg))
+	js, nc, err := connect(addr, errorHandler(errCh), closedHandler(&wg))
 	if err != nil {
 		n.T().Fatalf("setting up nats server failed: %v", err)
 	}
@@ -160,16 +180,6 @@ func (n *natsTestSuite) TestPublishAndSubscribe() {
 	}
 }
 
-func (n *natsTestSuite) checkHeaders(msg *nats.Msg) {
-	expectedHeaders := [5]string{"subject", "trace", "span", "trace-state", "trace-remote"}
-	for _, h := range expectedHeaders {
-		_, exists := msg.Header[h]
-		if exists != true {
-			assert.Fail(n.T(), fmt.Sprintf("header %s isn't in the message header", h))
-		}
-	}
-}
-
 func (n *natsTestSuite) TestClosedStates() {
 	// Given
 	const testClosingSubject = "test.close"
@@ -178,7 +188,7 @@ func (n *natsTestSuite) TestClosedStates() {
 	defer cancel()
 	addr, _ := os.LookupEnv("TESTINGNATS_URL")
 	// Publisher
-	js1, nc1, err := New(addr)
+	js1, nc1, err := connect(addr)
 	if err != nil {
 		n.T().Fatalf("setting up nats server failed: %v", err)
 	}
@@ -187,7 +197,7 @@ func (n *natsTestSuite) TestClosedStates() {
 		n.T().Fatalf("setting up publisher: %v", err)
 	}
 	// Subscriber
-	js2, nc2, err := New(addr)
+	js2, nc2, err := connect(addr)
 	if err != nil {
 		n.T().Fatalf("setting up nats server failed: %v", err)
 	}
@@ -234,7 +244,7 @@ func (n *natsTestSuite) TestClosedStates() {
 
 func (n *natsTestSuite) TestConcurrentClose() {
 	addr, _ := os.LookupEnv("TESTINGNATS_URL")
-	js, nc, err := New(addr)
+	js, nc, err := connect(addr)
 	n.Require().NoError(err)
 	consumer, err := n.js.AddConsumer(test, &nats.ConsumerConfig{
 		Durable:        test + "concurrentclose",
@@ -267,7 +277,7 @@ type natsFixture struct {
 // newFixture creates a uniquely named stream with a push consumer bound to a queue group.
 func (n *natsTestSuite) newFixture() *natsFixture {
 	addr, _ := os.LookupEnv("TESTINGNATS_URL")
-	js, nc, err := New(addr)
+	js, nc, err := connect(addr)
 	n.Require().NoError(err)
 
 	uid := id.New()
@@ -286,7 +296,7 @@ func (n *natsTestSuite) newFixture() *natsFixture {
 
 	n.T().Cleanup(func() {
 		// the subscriber may have drained the connection already.
-		_, cleanNC, err := New(addr)
+		_, cleanNC, err := connect(addr)
 		if err != nil {
 			return
 		}
@@ -315,7 +325,7 @@ func (n *natsTestSuite) TestPublishAndSubscribeMetadata() {
 	}
 	ch := make(chan received, 1)
 	err = s.Subscribe(context.Background(), f.subject, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
-		ch <- received{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx), traceID: trace.SpanContextFromContext(ctx).TraceID()}
+		ch <- received{msg: msg.String(), metadata: metadata, topic: pubsub.Topic(ctx), traceID: trace.SpanContextFromContext(ctx).TraceID()}
 		return nil
 	})
 	n.Require().NoError(err)
@@ -335,6 +345,7 @@ func (n *natsTestSuite) TestPublishAndSubscribeMetadata() {
 		n.Equal(f.subject, r.topic)
 		n.Equal("value", r.metadata["attb1"])
 		n.Equal(f.subject, r.metadata["subject"])
+		n.Contains(r.metadata["traceparent"], sc.TraceID().String())
 		n.Equal(sc.TraceID(), r.traceID)
 	case <-time.After(10 * time.Second):
 		n.FailNow("timeout waiting for message")
@@ -377,33 +388,65 @@ func (n *natsTestSuite) TestSubscribeWithAckNackRedelivery() {
 	}
 }
 
-func (n *natsTestSuite) TestHandlerErrorKeepsSubscription() {
-	f := n.newFixture()
-	p, err := NewPublisher(f.nc, f.js)
-	n.Require().NoError(err)
-	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
-	n.Require().NoError(err)
-
-	ch := make(chan string, 2)
-	err = s.Subscribe(context.Background(), f.subject, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
-		ch <- msg.String()
-		return fmt.Errorf("handler failed for %s", msg)
-	})
-	n.Require().NoError(err)
-
-	n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("first")))
-	n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("second")))
-
-	got := []string{}
-	for range 2 {
-		select {
-		case msg := <-ch:
-			got = append(got, msg)
-		case <-time.After(10 * time.Second):
-			n.FailNow("timeout waiting for messages")
-		}
+// TestSubscribeAcksOnSuccess checks that Subscribe acks a message once handled and nacks it when
+// the handler failed, so it is redelivered.
+func (n *natsTestSuite) TestSubscribeAcksOnSuccess() {
+	tests := []struct {
+		name           string
+		failFirst      bool
+		wantDeliveries int
+	}{
+		{name: "handled message is acked", wantDeliveries: 1},
+		{name: "failed message is redelivered", failFirst: true, wantDeliveries: 2},
 	}
-	n.ElementsMatch([]string{"first", "second"}, got)
+	for _, tt := range tests {
+		n.Run(tt.name, func() {
+			f := n.newFixture()
+			p, err := NewPublisher(f.nc, f.js)
+			n.Require().NoError(err)
+			s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
+			n.Require().NoError(err)
+
+			var mu sync.Mutex
+			deliveries := map[string]int{}
+			handled := make(chan string, 10)
+			err = s.Subscribe(context.Background(), f.subject, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+				mu.Lock()
+				deliveries[msg.String()]++
+				count := deliveries[msg.String()]
+				mu.Unlock()
+				if tt.failFirst && count == 1 {
+					return fmt.Errorf("handler failed for %s", msg)
+				}
+				select {
+				case handled <- msg.String():
+				default:
+				}
+				return nil
+			})
+			n.Require().NoError(err)
+
+			n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("first")))
+			n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("second")))
+
+			got := []string{}
+			for range 2 {
+				select {
+				case msg := <-handled:
+					got = append(got, msg)
+				case <-time.After(10 * time.Second):
+					n.FailNow("timeout waiting for messages")
+				}
+			}
+			n.ElementsMatch([]string{"first", "second"}, got)
+
+			// a message that is not acked would be redelivered right away.
+			time.Sleep(time.Second)
+			mu.Lock()
+			defer mu.Unlock()
+			n.Equal(map[string]int{"first": tt.wantDeliveries, "second": tt.wantDeliveries}, deliveries)
+		})
+	}
 }
 
 func (n *natsTestSuite) TestPublishSubscribeErrors() {

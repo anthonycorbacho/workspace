@@ -2,6 +2,7 @@ package blob
 
 import "time"
 
+// ObjectMeta is the metadata of a file stored in a bucket, as returned by Blob.Head.
 type ObjectMeta struct {
 	Bucket       string
 	Key          string

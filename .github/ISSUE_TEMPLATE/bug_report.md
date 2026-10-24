@@ -1,8 +1,8 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Report a bug in the kit, the tooling or a service
 title: ''
-labels: ''
+labels: bug
 assignees: ''
 
 ---
@@ -10,29 +10,26 @@ assignees: ''
 **Describe the bug**
 A clear and concise description of what the bug is.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+**Where**
+The package, service or tool (eg: `kit/pubsub/kafka`, `sample/sampleapp`, `make codegen`, Tilt).
+
+**To reproduce**
+A minimal code snippet, test or the commands to run.
+
+```go
+```
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What you expected to happen.
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+**Actual behavior**
+What happened, with the error, logs or stack trace.
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
-
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+**Environment**
+ - Go version (`go version`):
+ - OS and architecture:
+ - Commit or version of the workspace:
+ - For local deployments: Docker, Kubernetes cluster (kind, k3d, Docker Desktop...) and Tilt versions
 
 **Additional context**
-Add any other context about the problem here.
+Anything else that helps to understand the problem.

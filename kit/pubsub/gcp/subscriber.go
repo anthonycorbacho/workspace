@@ -9,18 +9,17 @@ import (
 	gcppubsub "cloud.google.com/go/pubsub/v2"
 	"cloud.google.com/go/pubsub/v2/apiv1/pubsubpb"
 	"github.com/anthonycorbacho/workspace/kit/errors"
+	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/cenkalti/backoff/v5"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 var _ pubsub.Subscriber = (*Subscriber)(nil)
 
-// SubscriberOption defines a Subscriber option.
+// SubscriberOption defines a Subscriber option, applied to the receive settings of the subscriptions.
 type SubscriberOption func(*gcppubsub.ReceiveSettings)
 
 // Subscriber attaches to a Google Cloud Pub/Sub subscription and returns a Go channel with messages from the topic.
@@ -38,9 +37,9 @@ type Subscriber struct {
 	settings                gcppubsub.ReceiveSettings
 }
 
-// NewSubscriber creates a new GCP PubSub Subscriber.
+// NewSubscriber creates a Google Cloud Pub/Sub subscriber using client, closed by Close.
 //
-// it required a call to Close in order to stop processing messages and close subscriber connections.
+// Close must be called to stop receiving messages and release the subscriptions.
 func NewSubscriber(client *gcppubsub.Client, opts ...SubscriberOption) (*Subscriber, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
@@ -85,17 +84,17 @@ func (s *Subscriber) Close() error {
 // Be aware that in Google Cloud Pub/Sub, only messages sent after the subscription was created can be consumed.
 //
 // See https://cloud.google.com/pubsub/docs/subscriber to find out more about how Google Cloud Pub/Sub Subscriptions work.
+//
+// A message is acked once the handler succeeded, it is nacked and redelivered when the handler failed.
 func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler pubsub.Handler) error {
-
-	h := func(ctx context.Context, msg pubsub.Message, metadata map[string]string, ack func(), nack func()) error {
-		// default behavior is to always ack.
-		ack()
-		return handler(ctx, msg, metadata)
-	}
-
-	return s.SubscribeWithAck(ctx, subscription, h)
+	return s.SubscribeWithAck(ctx, subscription, pubsub.AckOnSuccess(handler))
 }
 
+// SubscribeWithAck consumes Google Cloud Pub/Sub subscription like Subscribe, the handler acknowledges the messages.
+// The ack deadline of a message that is neither acked nor nacked is extended up to MaxExtension
+// (see WithMaxExtension), the message is then redelivered.
+//
+// The messages are received until ctx is done or the subscriber is closed.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
 	if s.isClosed() {
 		return pubsub.ErrSubscriberClosed
@@ -127,7 +126,9 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 	go func(sub *gcppubsub.Subscriber, handler pubsub.HandlerWithAck) {
 
 		// utilise exponential Backoff on the subscription to give room to breeze.
-		if _, err := backoff.Retry(ctx, func() (struct{}, error) {
+		// Retry only gives up once the subscription is stopped (closed subscriber or canceled
+		// context), its error is the cancellation cause: there is nothing to report.
+		_, _ = backoff.Retry(ctx, func() (struct{}, error) { //nolint:errcheck // see above.
 			err := s.receive(ctx, sub, handler)
 			if err == nil {
 				// Receiving messages finished with no error
@@ -139,15 +140,13 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 				return struct{}{}, backoff.Permanent(err)
 			}
 
-			// Receiving messages failed, retrying
+			// the failures are retried forever, report them so a subscription that cannot receive is visible.
+			log.L().Warn(ctx, "receiving messages failed, retrying", log.String("subscription", sub.ID()), log.Error(err))
 			return struct{}{}, err
 		},
 			backoff.WithBackOff(backoff.NewExponentialBackOff()),
 			backoff.WithMaxElapsedTime(0), // 0 means it never expires
-		); err != nil && !s.isClosed() {
-			// Retrying receiving messages failed
-			fmt.Printf("retrying receiving messages failed: %s\n", err)
-		}
+		)
 		close(receiveFinished)
 	}(sub, handler)
 
@@ -182,19 +181,9 @@ func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscriber, han
 			// no-oop: responsibility of the caller
 		}
 
-		// recreate the context with traces
-		ctx = contextFromTracingAttributes(ctx, m.Attributes)
-		topic := m.Attributes["topic"]
-
-		// Add to the context the topic.
-		ctx = pubsub.WithTopic(ctx, topic)
-
-		// annotate the span
-		var span trace.Span
-		ctx, span = tracer.Start(ctx, fmt.Sprintf("Subscription %s/%s", topic, sub.ID()))
-		span.SetAttributes(attribute.String("subscription", sub.ID()))
-		span.SetAttributes(attribute.String("topic", topic))
+		ctx, span := startProcessSpan(ctx, tracer, sub.ID(), m)
 		defer span.End()
+		ctx = pubsub.WithTopic(ctx, m.Attributes[topicAttribute])
 
 		ack := func() {
 			m.Ack()
@@ -206,13 +195,13 @@ func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscriber, han
 		// Process the message
 		// in case of error, we record and label the error in the span.
 		if err := handler(ctx, m.Data, m.Attributes, ack, nack); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			tracing.RecordError(span, err)
 		}
 	})
 	return err
 }
 
+// subscription returns the subscriber of the subscription, it checks the subscription exists the first time it is used.
 func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gcppubsub.Subscriber, error) {
 	s.activeSubscriptionsLock.RLock()
 	sub, ok := s.activeSubscriptions[subscription]
@@ -221,9 +210,7 @@ func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gc
 		return sub, nil
 	}
 
-	s.activeSubscriptionsLock.Lock()
-	defer s.activeSubscriptionsLock.Unlock()
-
+	// checked without the lock so a slow RPC does not block subscribing to the other subscriptions.
 	_, err := s.client.SubscriptionAdminClient.GetSubscription(ctx, &pubsubpb.GetSubscriptionRequest{
 		Subscription: resourceName(s.client.Project(), "subscriptions", subscription),
 	})
@@ -232,6 +219,15 @@ func (s *Subscriber) subscription(ctx context.Context, subscription string) (*gc
 	}
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not check if subscription %s exists", subscription)
+	}
+
+	s.activeSubscriptionsLock.Lock()
+	defer s.activeSubscriptionsLock.Unlock()
+
+	// another subscribe may have added the subscription during the check, the subscriber must be
+	// shared as the receive settings are applied once.
+	if sub, ok := s.activeSubscriptions[subscription]; ok {
+		return sub, nil
 	}
 
 	sub = s.client.Subscriber(subscription)

@@ -8,88 +8,83 @@ import (
 	"google.golang.org/grpc"
 )
 
-// FoundationOptions provides a set of configurable options for Foundation.
-type FoundationOptions struct {
+// options are the configurable options of a Foundation.
+type options struct {
 	grpcAddr         string
 	httpAddr         string
 	metricsAddr      string
 	probesAddr       string
 	grpcServerOpts   []grpc.ServerOption
-	corsOpts         cors.Options
-	enableCors       bool
+	cors             *cors.Options
 	httpWriteTimeout time.Duration
 	httpReadTimeout  time.Duration
 	logger           *log.Logger
 }
 
 // Option defines a Foundation option.
-type Option func(*FoundationOptions)
+type Option func(*options)
 
-// WithGrpcServerOptions defines GRPC server options.
-func WithGrpcServerOptions(opts ...grpc.ServerOption) Option {
-	return func(fo *FoundationOptions) {
-		fo.grpcServerOpts = opts
+// WithGRPCServerOptions defines the gRPC server options.
+func WithGRPCServerOptions(opts ...grpc.ServerOption) Option {
+	return func(o *options) {
+		o.grpcServerOpts = opts
 	}
 }
 
-// EnableCors will add cors support to the http server.
-func EnableCors() Option {
-	return func(fo *FoundationOptions) {
-		fo.enableCors = true
+// WithCORS enables CORS on the HTTP server with the given options.
+func WithCORS(opts cors.Options) Option {
+	return func(o *options) {
+		o.cors = &opts
 	}
 }
 
-// WithCorsOptions defines http server cors options.
-func WithCorsOptions(opts cors.Options) Option {
-	return func(fo *FoundationOptions) {
-		fo.corsOpts = opts
+// WithGRPCAddr defines the gRPC server host and port.
+func WithGRPCAddr(addr string) Option {
+	return func(o *options) {
+		o.grpcAddr = addr
 	}
 }
 
-// WithGrpcAddr defines a GRPC server host and port.
-func WithGrpcAddr(addr string) Option {
-	return func(fo *FoundationOptions) {
-		fo.grpcAddr = addr
-	}
-}
-
-// WithHTTPAddr defines a HTTP server host and port.
+// WithHTTPAddr defines the HTTP server host and port.
 func WithHTTPAddr(addr string) Option {
-	return func(fo *FoundationOptions) {
-		fo.httpAddr = addr
+	return func(o *options) {
+		o.httpAddr = addr
 	}
 }
 
-// WithHTTPWriteTimeout defines write timeout for the HTTP server.
+// WithHTTPWriteTimeout defines the write timeout of the HTTP server.
 func WithHTTPWriteTimeout(timeout time.Duration) Option {
-	return func(fo *FoundationOptions) {
-		fo.httpWriteTimeout = timeout
+	return func(o *options) {
+		o.httpWriteTimeout = timeout
 	}
 }
 
-// WithHTTPReadTimeout defines read timeout for the HTTP server.
+// WithHTTPReadTimeout defines the read timeout of the HTTP server.
 func WithHTTPReadTimeout(timeout time.Duration) Option {
-	return func(fo *FoundationOptions) {
-		fo.httpReadTimeout = timeout
+	return func(o *options) {
+		o.httpReadTimeout = timeout
 	}
 }
 
+// WithLogger defines the logger of the foundation and of its servers, a nil logger is ignored.
 func WithLogger(logger *log.Logger) Option {
-	return func(fo *FoundationOptions) {
-		fo.logger = logger
+	return func(o *options) {
+		if logger != nil {
+			o.logger = logger
+		}
 	}
 }
 
 // WithMetricsAddr defines the address of the HTTP server exposing the prometheus /metrics endpoint.
 func WithMetricsAddr(addr string) Option {
-	return func(fo *FoundationOptions) {
-		fo.metricsAddr = addr
+	return func(o *options) {
+		o.metricsAddr = addr
 	}
 }
 
 // WithProbesAddr defines the address of the HTTP server exposing the health probes and profiling endpoints.
 func WithProbesAddr(addr string) Option {
-	return func(fo *FoundationOptions) {
-		fo.probesAddr = addr
+	return func(o *options) {
+		o.probesAddr = addr
 	}
 }

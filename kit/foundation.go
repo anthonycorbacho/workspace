@@ -26,7 +26,6 @@ import (
 	httpmetrics "github.com/slok/go-http-metrics/metrics"
 	metrics "github.com/slok/go-http-metrics/metrics/prometheus"
 	"github.com/slok/go-http-metrics/middleware"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -53,7 +52,7 @@ type Foundation struct {
 	// foundation name
 	name string
 	// foundation options
-	opts *FoundationOptions
+	opts *options
 	// foundation logger
 	logger *log.Logger
 	// gRPC gateway
@@ -79,7 +78,7 @@ type Foundation struct {
 // eg:
 //
 //	// Setting up grpc server via option
-//	kit.NewFoundation("myservice", kit.WithGrpcAddr("localhost:8089"))
+//	kit.NewFoundation("myservice", kit.WithGRPCAddr("localhost:8089"))
 //
 //	// Setting up grpc server via Env
 //	FOUNDATION_GRPC_ADDRESS=localhost:8089
@@ -90,13 +89,13 @@ type Foundation struct {
 //	1- Default configuration
 //	2- Env variable
 //	3- Options
-func NewFoundation(name string, options ...Option) (*Foundation, error) {
+func NewFoundation(name string, optFns ...Option) (*Foundation, error) {
 	if len(name) == 0 {
 		return nil, errors.New("foundation name is required")
 	}
 
 	// Setup default configuration
-	opts := &FoundationOptions{
+	opts := &options{
 		httpAddr:         config.LookupEnv("FOUNDATION_HTTP_ADDRESS", "0.0.0.0:8080"),
 		grpcAddr:         config.LookupEnv("FOUNDATION_GRPC_ADDRESS", "0.0.0.0:8081"),
 		metricsAddr:      config.LookupEnv("FOUNDATION_METRICS_ADDRESS", ":9090"),
@@ -105,7 +104,7 @@ func NewFoundation(name string, options ...Option) (*Foundation, error) {
 		httpReadTimeout:  15 * time.Second,
 		logger:           log.NewNop(),
 	}
-	for _, o := range options {
+	for _, o := range optFns {
 		o(opts)
 	}
 
@@ -126,7 +125,7 @@ type RegisterServiceFunc func(s *grpc.Server)
 func (f *Foundation) RegisterService(fn RegisterServiceFunc) {
 	// Create GRPC server only once
 	f.grpcOnce.Do(func() {
-		f.grpcServer = grpckit.NewServer(f.opts.grpcServerOpts...)
+		f.grpcServer = grpckit.NewServer(f.logger, f.opts.grpcServerOpts...)
 	})
 	fn(f.grpcServer)
 }
@@ -153,14 +152,12 @@ func (f *Foundation) initHTTPServerOnce() {
 		var h http.Handler = f.httpRouter
 
 		// If cors is enabled, we should set it depending on the options
-		if opts.enableCors {
-			h = cors.New(opts.corsOpts).Handler(h)
+		if opts.cors != nil {
+			h = cors.New(*opts.cors).Handler(h)
 		}
 
-		// Provide tracing for OTEL
-		h = otelhttp.NewHandler(h, name, otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-			return fmt.Sprintf("[%s] %s", r.Method, r.RequestURI)
-		}))
+		// Provide tracing for OTEL, the spans are named after the route pattern (see telemetry.Middleware).
+		h = telemetry.TraceHandler(h, name)
 
 		// Compress the responses
 		h = gzhttp.GzipHandler(h)
@@ -214,8 +211,8 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 			}),
 			runtime.WithMetadata(func(ctx context.Context, req *http.Request) metadata.MD {
 				md := make(map[string]string)
-				if _, ok := runtime.HTTPPathPattern(ctx); ok {
-					md["pattern"] = req.RequestURI
+				if pattern, ok := runtime.HTTPPathPattern(ctx); ok {
+					md["pattern"] = pattern
 				}
 				md["method"] = req.Method
 

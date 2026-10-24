@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	kitConfig "github.com/anthonycorbacho/workspace/kit/config"
 	"github.com/anthonycorbacho/workspace/kit/id"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"go.opentelemetry.io/otel/trace"
@@ -30,20 +32,21 @@ func (suite *kafkaTestSuite) SetupSuite() {
 		suite.T().Skip("No testing kafka setup via env variable TESTINGKAFKA_URL")
 	}
 	suite.testURL = kitConfig.LookupEnv("TESTINGKAFKA_URL", "127.0.0.1:19092")
-
+	// the trace context is propagated with the global propagator, set by kit/telemetry.
+	tracingtest.UsePropagator(suite.T())
 }
 
 func (suite *kafkaTestSuite) TestClient() {
-	clientId := fmt.Sprintf("test-client-%s", id.New())
-	c, err := NewClient([]string{suite.testURL}, WithClientID(clientId))
+	clientID := fmt.Sprintf("test-client-%s", id.New())
+	c, err := NewClient([]string{suite.testURL}, WithClientID(clientID))
 	suite.NoError(err)
 	defer c.Close()
-	suite.NoError(c.Ping())
+	suite.NoError(c.Ping(context.Background()))
 }
 
 func (suite *kafkaTestSuite) TestPublishAndSubscribe() {
-	clientId := fmt.Sprintf("test-client-%s", id.New())
-	c, err := NewClient([]string{suite.testURL}, WithClientID(clientId), WithAutoTopicCreation())
+	clientID := fmt.Sprintf("test-client-%s", id.New())
+	c, err := NewClient([]string{suite.testURL}, WithClientID(clientID), WithAutoTopicCreation())
 	suite.NoError(err)
 	defer c.Close()
 
@@ -149,7 +152,7 @@ func (suite *kafkaTestSuite) TestPublishAndSubscribeMetadata() {
 	suite.Require().NoError(err)
 
 	err = s.Subscribe(context.Background(), topic, func(ctx context.Context, msg pubsub.Message, metadata map[string]string) error {
-		ch <- received{msg: msg.String(), metadata: metadata, topic: pubsub.GetTopic(ctx), traceID: trace.SpanContextFromContext(ctx).TraceID()}
+		ch <- received{msg: msg.String(), metadata: metadata, topic: pubsub.Topic(ctx), traceID: trace.SpanContextFromContext(ctx).TraceID()}
 		return nil
 	})
 	suite.Require().NoError(err)
@@ -160,7 +163,7 @@ func (suite *kafkaTestSuite) TestPublishAndSubscribeMetadata() {
 		suite.Equal(topic, r.topic)
 		suite.Equal(topic, r.metadata["topic"])
 		suite.Equal("value", r.metadata["attb1"])
-		suite.Equal("true", r.metadata["trace-sampled"])
+		suite.Contains(r.metadata["traceparent"], sc.TraceID().String())
 		suite.Contains(r.metadata, "partition")
 		suite.Contains(r.metadata, "offset")
 		suite.Equal(sc.TraceID(), r.traceID)
@@ -169,56 +172,95 @@ func (suite *kafkaTestSuite) TestPublishAndSubscribeMetadata() {
 	}
 }
 
-func (suite *kafkaTestSuite) TestHandlerErrorKeepsSubscription() {
-	topic := fmt.Sprintf("kit-err-%s", id.New())
-	suite.publish(topic, "first", "second")
-
-	s, err := NewSubscriber(suite.newClient())
-	suite.Require().NoError(err)
-	defer s.Close()
-
-	ch := make(chan string, 2)
-	err = s.Subscribe(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
-		ch <- msg.String()
-		return fmt.Errorf("handler failed for %s", msg)
-	})
-	suite.Require().NoError(err)
-
-	got := []string{}
-	for range 2 {
-		select {
-		case m := <-ch:
-			got = append(got, m)
-		case <-time.After(kafkaTimeout):
-			suite.FailNow("timeout waiting for messages")
-		}
-	}
-	suite.Equal([]string{"first", "second"}, got)
-}
-
-// TestManualCommitRedelivery checks that with auto commit disabled, a message that is not acked
-// is redelivered to the next consumer of the group, while an acked one is not.
-func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
+// TestSubscribeAcksOnSuccess checks that Subscribe acks a record once handled and nacks it when
+// the handler failed, so it is consumed again before the next records of the partition.
+func (suite *kafkaTestSuite) TestSubscribeAcksOnSuccess() {
 	tests := []struct {
 		name      string
-		ack       bool
-		wantFirst string
+		failFirst bool
+		want      []string
 	}{
-		{name: "ack commits the offset", ack: true, wantFirst: "m2"},
+		{name: "handled record is acked", want: []string{"first", "second"}},
+		{name: "failed record is consumed again", failFirst: true, want: []string{"first", "first", "second", "second"}},
+	}
+	for _, tt := range tests {
+		suite.Run(tt.name, func() {
+			topic := fmt.Sprintf("kit-ack-%s", id.New())
+			suite.publish(topic, "first", "second")
+
+			s, err := NewSubscriber(suite.newClient(WithConsumerGroup("group-" + id.New())))
+			suite.Require().NoError(err)
+			defer s.Close()
+
+			var mu sync.Mutex
+			deliveries := []string{}
+			handled := make(chan string, 10)
+			err = s.Subscribe(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string) error {
+				mu.Lock()
+				deliveries = append(deliveries, msg.String())
+				first := !slices.Contains(deliveries[:len(deliveries)-1], msg.String())
+				mu.Unlock()
+				if tt.failFirst && first {
+					return fmt.Errorf("handler failed for %s", msg)
+				}
+				select {
+				case handled <- msg.String():
+				default:
+				}
+				return nil
+			})
+			suite.Require().NoError(err)
+
+			for _, want := range []string{"first", "second"} {
+				select {
+				case m := <-handled:
+					suite.Equal(want, m)
+				case <-time.After(kafkaTimeout):
+					suite.FailNow("timeout waiting for messages")
+				}
+			}
+
+			// a record that is not acked would be consumed again right away.
+			time.Sleep(time.Second)
+			mu.Lock()
+			defer mu.Unlock()
+			suite.Equal(tt.want, deliveries)
+		})
+	}
+}
+
+// TestManualCommitRedelivery checks that a record that is not acked is redelivered to the next
+// consumer of the group, while an acked one is not.
+func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
+	tests := []struct {
+		name       string
+		autoCommit bool
+		ack        bool
+		wantFirst  string
+	}{
+		{name: "ack commits the offset", ack: true, wantFirst: "m3"},
 		{name: "nack keeps the offset", ack: false, wantFirst: "m1"},
+		{name: "auto commit: ack commits the offset", autoCommit: true, ack: true, wantFirst: "m3"},
+		{name: "auto commit: nack keeps the offset", autoCommit: true, ack: false, wantFirst: "m1"},
 	}
 	for _, tt := range tests {
 		suite.Run(tt.name, func() {
 			topic := fmt.Sprintf("kit-commit-%s", id.New())
 			group := fmt.Sprintf("group-%s", id.New())
-			suite.publish(topic, "m1")
+			suite.publish(topic, "m1", "m2")
 
-			// first consumer handles m1 then leaves the group.
-			s1, err := NewSubscriber(suite.newClient(WithConsumerGroup(group)))
+			opts := []Option{WithConsumerGroup(group)}
+			if tt.autoCommit {
+				opts = append(opts, WithAutoCommit())
+			}
+
+			// first consumer handles m1 (and m2 once m1 is acked) then leaves the group.
+			s1, err := NewSubscriber(suite.newClient(opts...))
 			suite.Require().NoError(err)
-			handled := make(chan string, 1)
+			handled := make(chan string, 10)
 			err = s1.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
-				if tt.ack {
+				// m2 is acked so committing it would commit past a nacked m1.
+				if tt.ack || msg.String() != "m1" {
 					ack()
 				} else {
 					nack()
@@ -230,15 +272,22 @@ func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
 				return nil
 			})
 			suite.Require().NoError(err)
-			select {
-			case m := <-handled:
-				suite.Equal("m1", m)
-			case <-time.After(kafkaTimeout):
-				suite.FailNow("timeout waiting for first delivery")
+			want := []string{"m1", "m2"}
+			if !tt.ack {
+				// m1 is consumed again until acked, m2 following it is not handled.
+				want = []string{"m1", "m1"}
+			}
+			for _, w := range want {
+				select {
+				case m := <-handled:
+					suite.Equal(w, m)
+				case <-time.After(kafkaTimeout):
+					suite.FailNow("timeout waiting for first delivery")
+				}
 			}
 			suite.Require().NoError(s1.Close())
 
-			suite.publish(topic, "m2")
+			suite.publish(topic, "m3")
 
 			// second consumer of the same group resumes from the committed offset.
 			s2, err := NewSubscriber(suite.newClient(WithConsumerGroup(group)))
@@ -286,7 +335,7 @@ func (suite *kafkaTestSuite) TestRegexSubscription() {
 	ch := make(chan received, 2)
 	handlerFor := func(pattern string) pubsub.Handler {
 		return func(ctx context.Context, msg pubsub.Message, _ map[string]string) error {
-			ch <- received{pattern: pattern, topic: pubsub.GetTopic(ctx), msg: msg.String()}
+			ch <- received{pattern: pattern, topic: pubsub.Topic(ctx), msg: msg.String()}
 			return nil
 		}
 	}

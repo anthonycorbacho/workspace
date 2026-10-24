@@ -11,7 +11,7 @@ import (
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
-// Client represents a Kafka client.
+// Client is a Kafka client, shared by a Publisher or a Subscriber.
 type Client struct {
 	client            *kgo.Client
 	autoCommitEnabled bool
@@ -33,6 +33,7 @@ type config struct {
 	autoTopicCreation bool
 }
 
+// Option configures a Client.
 type Option func(*config)
 
 // WithClientID sets the client ID.
@@ -90,6 +91,8 @@ func WithSASLScramSHA512(username, password string) Option {
 	}
 }
 
+// WithRegex consumes the topics matching the regex patterns, a Subscriber must subscribe to
+// each pattern (see Subscriber.SubscribeWithAck) before the records are polled.
 func WithRegex(patterns []string) Option {
 	return func(c *config) {
 		c.regexEnabled = true
@@ -105,7 +108,7 @@ func WithAutoTopicCreation() Option {
 	}
 }
 
-// NewClient creates a new Kafka client.
+// NewClient creates a Kafka client connecting to brokers, it connects lazily.
 func NewClient(brokers []string, options ...Option) (*Client, error) {
 	if len(brokers) == 0 {
 		return nil, errors.New("brokers should not be empty")
@@ -207,6 +210,6 @@ func (c *Client) Close() {
 }
 
 // Ping returns whether any broker is reachable.
-func (c *Client) Ping() error {
-	return c.client.Ping(context.TODO())
+func (c *Client) Ping(ctx context.Context) error {
+	return c.client.Ping(ctx)
 }

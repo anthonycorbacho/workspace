@@ -17,8 +17,7 @@ import (
 //	OTEL_RESOURCE_ATTRIBUTES=service.version=0.0.1,service.namespace=default
 //
 // see: https://pkg.go.dev/go.opentelemetry.io/otel/semconv/v1.7.0#pkg-constants
-func NewMeter(name string, opts ...func(option *MeterOption)) (*metric.MeterProvider, error) {
-
+func NewMeter(name string) (*metric.MeterProvider, error) {
 	// the resource is created first so a failure doesn't leave the exporter
 	// registered in the default prometheus registry.
 	resource, err := newResource(name)
@@ -41,8 +40,4 @@ func NewMeter(name string, opts ...func(option *MeterOption)) (*metric.MeterProv
 
 	otel.SetMeterProvider(provider)
 	return provider, nil
-}
-
-// MeterOption for the Meter.
-type MeterOption struct {
 }

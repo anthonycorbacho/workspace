@@ -14,10 +14,9 @@ type Cache interface {
 	// If the data or the cache expired, cache.ErrNotFound will be returned.
 	Get(ctx context.Context, key string, value any) error
 
-	// MultiGet multiple gets to collect values from multiple keys
-	// Same with Get:
-	// if the data cannot be parsed into the value, and error will be returned.
-	// If the data or the cache expired, cache.ErrNotFound will be returned.
+	// MultiGet collects the values of multiple keys and appends them to the slice pointed to by value.
+	// Unlike Get, missing or expired keys and values that cannot be parsed are skipped,
+	// so the slice may contain fewer items than keys.
 	MultiGet(ctx context.Context, keys []string, value any) error
 
 	// Set sets the given data to the cache with a duration TTL.

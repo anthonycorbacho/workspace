@@ -14,12 +14,12 @@ import (
 // enforce the Cache to implement the cache.Cache interface.
 var _ cache.Cache = (*Cache)(nil)
 
-// Cache provides a cache based on Redis
+// Cache provides a cache.Cache based on Redis.
 type Cache struct {
 	client *redis.Client
 }
 
-// New create a new Cache with the given redis configuration.
+// New creates a new Cache with the given redis configuration, with tracing and metrics enabled.
 func New(opt *redis.Options) (*Cache, error) {
 	// If there is no options, we should stop and return an error.
 	if opt == nil {
@@ -52,6 +52,7 @@ func (c *Cache) Close() error {
 	return c.client.Close()
 }
 
+// Get implements cache.Cache.
 func (c *Cache) Get(ctx context.Context, key string, value any) error {
 	if len(key) == 0 {
 		return cache.ErrKeyInvalid
@@ -60,17 +61,17 @@ func (c *Cache) Get(ctx context.Context, key string, value any) error {
 	cmd := c.client.Get(ctx, key)
 	b, err := cmd.Bytes()
 	if err != nil {
-
 		// If key doesn't exist or the cache expired.
 		if errors.Is(err, redis.Nil) {
 			return cache.ErrNotFound
 		}
-		return errors.Wrapf(err, "unmarshal value of key '%s'", key)
+		return errors.Wrapf(err, "getting value from cache for key '%s'", key)
 	}
 
 	return cache.Unmarshal(b, value)
 }
 
+// MultiGet implements cache.Cache, value must be a pointer to a slice.
 func (c *Cache) MultiGet(ctx context.Context, keys []string, value any) error {
 	if len(keys) == 0 {
 		return nil
@@ -119,6 +120,7 @@ func (c *Cache) MultiGet(ctx context.Context, keys []string, value any) error {
 	return nil
 }
 
+// Set implements cache.Cache.
 func (c *Cache) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
 	if len(key) == 0 {
 		return cache.ErrKeyInvalid
@@ -140,6 +142,7 @@ func (c *Cache) Set(ctx context.Context, key string, value any, expiration time.
 	return nil
 }
 
+// Delete implements cache.Cache.
 func (c *Cache) Delete(ctx context.Context, key string) error {
 	if len(key) == 0 {
 		return cache.ErrKeyInvalid

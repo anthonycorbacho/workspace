@@ -1,9 +1,9 @@
-package blobminio
+package minio
 
 import (
 	"github.com/anthonycorbacho/workspace/kit/blob"
 	"github.com/anthonycorbacho/workspace/kit/errors"
-	"github.com/minio/minio-go/v7"
+	miniogo "github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
@@ -17,6 +17,7 @@ type Config struct {
 	StaticCredentials `yaml:",inline"`
 }
 
+// StaticCredentials are the credentials used when CredentialSource is "static".
 type StaticCredentials struct {
 	AccessKeyID     string `yaml:"accessKeyId" env:"BLOB_ACCESS_KEY_ID,overwrite,default="`
 	SecretAccessKey string `yaml:"secretAccessKey" env:"BLOB_SECRET_ACCESS_KEY,overwrite,default="`
@@ -63,7 +64,7 @@ func (c *Config) newS3Client() (blob.Blob, error) {
 }
 
 func (c *Config) newClient(creds *credentials.Credentials) (blob.Blob, error) {
-	cli, err := minio.New(c.Endpoint, &minio.Options{
+	cli, err := miniogo.New(c.Endpoint, &miniogo.Options{
 		Creds:  creds,
 		Secure: c.UseSSL,
 		Region: c.Region,

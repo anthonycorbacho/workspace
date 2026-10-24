@@ -17,8 +17,8 @@ func Newf(format string, args ...any) error {
 	return New(fmt.Sprintf(format, args...))
 }
 
-// Wrap returns an error annotating err with a stack trace
-// at the point Wrap is called, and the supplied message.
+// Wrap returns an error annotating err with the supplied message ("message: err"),
+// err stays in the chain so errors.Is and errors.As still match it.
 // If err is nil, Wrap returns nil.
 func Wrap(err error, message string) error {
 	if err == nil {
@@ -28,8 +28,7 @@ func Wrap(err error, message string) error {
 	return fmt.Errorf("%s: %w", message, err)
 }
 
-// Wrapf returns an error annotating err with a stack trace
-// at the point Wrapf is called, and the format specifier.
+// Wrapf is like Wrap with a message formatted according to a format specifier.
 // If err is nil, Wrapf returns nil.
 func Wrapf(err error, format string, args ...any) error {
 	if err == nil {
