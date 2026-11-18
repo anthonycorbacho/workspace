@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -71,6 +72,7 @@ type Foundation struct {
 	// Healths checks
 	livenessProbe  http.HandlerFunc
 	readinessProbe http.HandlerFunc
+	draining       atomic.Bool
 }
 
 // NewFoundation creates a new foundation service.
@@ -102,10 +104,14 @@ func NewFoundation(name string, optFns ...Option) (*Foundation, error) {
 		probesAddr:       config.LookupEnv("FOUNDATION_PROBES_ADDRESS", ":9091"),
 		httpWriteTimeout: 15 * time.Second,
 		httpReadTimeout:  15 * time.Second,
+		shutdownTimeout:  15 * time.Second,
 		logger:           log.NewNop(),
 	}
 	for _, o := range optFns {
 		o(opts)
+	}
+	if opts.shutdownTimeout <= 0 {
+		return nil, errors.New("shutdown timeout must be positive")
 	}
 
 	// Create the Foundation service
@@ -293,6 +299,7 @@ func handlerClosure(fn func() (string, error)) http.HandlerFunc {
 // Serve configure and start serving request for the foundation service.
 //
 // It blocks until the process receives an interrupt or terminate signal, or until one of the servers fails.
+// Shutdown marks the service unready and drains HTTP before gRPC, within the shared WithShutdownTimeout budget.
 func (f *Foundation) Serve() error {
 	// GOMAXPROCS is container aware since go 1.25 (cgroup CPU limit), no need to set it.
 
@@ -330,7 +337,7 @@ func (f *Foundation) Serve() error {
 	internalServers := []*http.Server{
 		{
 			Addr:        f.opts.probesAddr,
-			Handler:     internalRouter(f.readinessProbe, f.livenessProbe),
+			Handler:     internalRouter(f.handleReadiness, f.livenessProbe),
 			ReadTimeout: 15 * time.Second,
 		},
 		{
@@ -358,7 +365,7 @@ func (f *Foundation) Serve() error {
 	}
 
 	if err := f.startGRPCServer(serverError); err != nil {
-		shutdownServers(f.logger, internalServers...)
+		f.shutdown(internalServers...)
 		return err
 	}
 	f.startHTTPServer(serverError)
@@ -371,25 +378,7 @@ func (f *Foundation) Serve() error {
 	case <-shutdown:
 	}
 
-	// Terminate GRPC server if started
-	if f.grpcServer != nil {
-		f.grpcServer.GracefulStop()
-	}
-
-	// terminate the HTTP servers if started.
-	servers := internalServers
-	if f.httpServer != nil {
-		servers = append(servers, f.httpServer)
-	}
-	shutdownServers(f.logger, servers...)
-
-	// the gateway client is closed once the HTTP server doesn't forward requests anymore.
-	if f.gwClient != nil {
-		if err := f.gwClient.Close(); err != nil {
-			f.logger.Warn(context.Background(), "closing grpc-gateway client", log.Error(err))
-		}
-	}
-
+	f.shutdown(internalServers...)
 	return serveErr
 }
 
@@ -433,17 +422,6 @@ func (f *Foundation) startHTTPServer(serverError chan<- error) {
 			serverError <- errors.Wrap(err, "http server")
 		}
 	}()
-}
-
-// shutdownServers gracefully shuts down the given HTTP servers.
-func shutdownServers(l *log.Logger, servers ...*http.Server) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	for _, srv := range servers {
-		if err := srv.Shutdown(ctx); err != nil {
-			l.Warn(ctx, "shutting down server", log.String("addr", srv.Addr), log.Error(err))
-		}
-	}
 }
 
 // metricsRouter returns the router exposing the prometheus metrics.

@@ -80,10 +80,19 @@ The Foundation is configured with options, or environment variables (the options
 | `WithGRPCAddr`                           | `FOUNDATION_GRPC_ADDRESS`    | `0.0.0.0:8081` |
 | `WithMetricsAddr`                        | `FOUNDATION_METRICS_ADDRESS` | `:9090`        |
 | `WithProbesAddr`                         | `FOUNDATION_PROBES_ADDRESS`  | `:9091`        |
+| `WithShutdownTimeout`                    |                             | `15s`          |
 | `WithLogger`                             | `FOUNDATION_LOG_LEVEL` (log) | no-op logger   |
 | `WithCORS`, `WithHTTPReadTimeout`, `WithHTTPWriteTimeout`, `WithGRPCServerOptions` | | |
 
 The traces are exported to the OTLP collector set by `OTEL_EXPORTER_OTLP_ENDPOINT` (see [telemetry](telemetry)).
+
+### Shutdown
+On an interrupt, SIGTERM, or server failure, `/readyz` returns 503 while the service drains.
+The HTTP server stops accepting requests and lets accepted requests finish using the gRPC gateway,
+then the gRPC server drains its remaining RPCs. Probes and metrics stay available during this drain.
+All servers share the `WithShutdownTimeout` grace period; remaining HTTP connections and RPCs are
+forcibly closed when it expires. Handlers should observe their context cancellation to release resources.
+The telemetry providers are then shut down with separate 5-second flush timeouts.
 
 ## Packages
 

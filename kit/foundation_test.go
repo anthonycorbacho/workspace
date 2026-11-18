@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
@@ -192,6 +193,7 @@ func TestServeAndShutdown(t *testing.T) {
 		WithHTTPAddr(freeAddr(t)),
 		WithProbesAddr(probesAddr),
 		WithMetricsAddr(metricsAddr),
+		WithShutdownTimeout(100*time.Millisecond),
 	)
 	require.NoError(t, err)
 	f.RegisterService(func(s *grpc.Server) {
@@ -228,6 +230,17 @@ func TestServeAndShutdown(t *testing.T) {
 	_ = resp.Body.Close()
 	assert.Contains(t, string(body), "grpc_server_handled_total")
 
+	// An active stream must not keep Serve blocked after SIGTERM.
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := healthpb.NewHealthClient(conn).Watch(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.NoError(t, err)
+
 	require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))
 	select {
 	case err := <-errCh:
@@ -236,6 +249,8 @@ func TestServeAndShutdown(t *testing.T) {
 		t.Fatal("Serve did not stop on SIGTERM")
 	}
 	assert.Equal(t, connectivity.Shutdown, f.gwClient.GetState(), "the gateway client is closed")
+	_, err = stream.Recv()
+	assert.Error(t, err, "the remaining stream is aborted")
 }
 
 func TestReadinessProbe(t *testing.T) {

@@ -18,6 +18,7 @@ type options struct {
 	cors             *cors.Options
 	httpWriteTimeout time.Duration
 	httpReadTimeout  time.Duration
+	shutdownTimeout  time.Duration
 	logger           *log.Logger
 }
 
@@ -63,6 +64,15 @@ func WithHTTPWriteTimeout(timeout time.Duration) Option {
 func WithHTTPReadTimeout(timeout time.Duration) Option {
 	return func(o *options) {
 		o.httpReadTimeout = timeout
+	}
+}
+
+// WithShutdownTimeout sets the shared grace period for draining the HTTP, gRPC, probes and metrics servers.
+// It defaults to 15 seconds and must be positive. Remaining connections are forcibly closed when it expires.
+// The telemetry providers have separate flush timeouts.
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(o *options) {
+		o.shutdownTimeout = timeout
 	}
 }
 

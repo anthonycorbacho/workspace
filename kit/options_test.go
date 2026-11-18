@@ -32,6 +32,18 @@ func TestNewFoundation(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "zero shutdown timeout",
+			fname:   "test",
+			options: []Option{WithShutdownTimeout(0)},
+			wantErr: true,
+		},
+		{
+			name:    "negative shutdown timeout",
+			fname:   "test",
+			options: []Option{WithShutdownTimeout(-time.Second)},
+			wantErr: true,
+		},
+		{
 			name:  "defaults",
 			fname: "test",
 			want: options{
@@ -41,6 +53,7 @@ func TestNewFoundation(t *testing.T) {
 				probesAddr:       ":9091",
 				httpWriteTimeout: 15 * time.Second,
 				httpReadTimeout:  15 * time.Second,
+				shutdownTimeout:  15 * time.Second,
 			},
 		},
 		{
@@ -59,6 +72,7 @@ func TestNewFoundation(t *testing.T) {
 				probesAddr:       "127.0.0.1:1004",
 				httpWriteTimeout: 15 * time.Second,
 				httpReadTimeout:  15 * time.Second,
+				shutdownTimeout:  15 * time.Second,
 			},
 		},
 		{
@@ -77,6 +91,7 @@ func TestNewFoundation(t *testing.T) {
 				WithProbesAddr("127.0.0.1:2004"),
 				WithHTTPWriteTimeout(time.Second),
 				WithHTTPReadTimeout(2 * time.Second),
+				WithShutdownTimeout(3 * time.Second),
 			},
 			want: options{
 				httpAddr:         "127.0.0.1:2001",
@@ -85,6 +100,7 @@ func TestNewFoundation(t *testing.T) {
 				probesAddr:       "127.0.0.1:2004",
 				httpWriteTimeout: time.Second,
 				httpReadTimeout:  2 * time.Second,
+				shutdownTimeout:  3 * time.Second,
 			},
 		},
 		{
@@ -102,6 +118,7 @@ func TestNewFoundation(t *testing.T) {
 				probesAddr:       ":9091",
 				httpWriteTimeout: 15 * time.Second,
 				httpReadTimeout:  15 * time.Second,
+				shutdownTimeout:  15 * time.Second,
 				cors:             &cors.Options{AllowedOrigins: []string{"https://example.com"}},
 				logger:           logger,
 			},
@@ -127,6 +144,7 @@ func TestNewFoundation(t *testing.T) {
 			assert.Equal(t, tt.want.probesAddr, f.opts.probesAddr)
 			assert.Equal(t, tt.want.httpWriteTimeout, f.opts.httpWriteTimeout)
 			assert.Equal(t, tt.want.httpReadTimeout, f.opts.httpReadTimeout)
+			assert.Equal(t, tt.want.shutdownTimeout, f.opts.shutdownTimeout)
 			assert.Equal(t, tt.want.cors, f.opts.cors)
 			assert.Len(t, f.opts.grpcServerOpts, tt.wantGrpcOpts)
 			require.NotNil(t, f.logger, "a logger is always set")
