@@ -163,7 +163,7 @@ func TestResolveHandlerForTopic(t *testing.T) {
 
 	called := ""
 	handlerFor := func(name string) pubsub.HandlerWithAck {
-		return func(context.Context, pubsub.Message, map[string]string, func(), func()) error {
+		return func(context.Context, pubsub.Message, map[string]string, func(), func(error)) error {
 			called = name
 			return nil
 		}
@@ -191,7 +191,7 @@ func TestResolveHandlerForTopic(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.NoError(t, h.handler(h.ctx, nil, nil, func() {}, func() {}))
+			require.NoError(t, h.handler(h.ctx, nil, nil, func() {}, func(error) {}))
 			assert.Equal(t, tt.want, called)
 		})
 	}
@@ -206,7 +206,7 @@ func TestSubscriptionContext(t *testing.T) {
 
 	type key struct{}
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
-	noop := func(context.Context, pubsub.Message, map[string]string, func(), func()) error { return nil }
+	noop := func(context.Context, pubsub.Message, map[string]string, func(), func(error)) error { return nil }
 	require.NoError(t, s.SubscribeWithAck(ctx, "orders", noop))
 	cancel()
 

@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -106,6 +107,9 @@ func (suite *kafkaTestSuite) TestConcurrentClose() {
 
 // kafkaTimeout is generous as joining a consumer group can take a few seconds.
 const kafkaTimeout = 20 * time.Second
+
+// fastBackoff redelivers the nacked records quickly in the tests.
+var fastBackoff = pubsub.Backoff{Initial: 50 * time.Millisecond, Max: 100 * time.Millisecond}
 
 func (suite *kafkaTestSuite) newClient(opts ...Option) *Client {
 	opts = append([]Option{WithClientID(fmt.Sprintf("test-client-%s", id.New()))}, opts...)
@@ -255,15 +259,15 @@ func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
 			}
 
 			// first consumer handles m1 (and m2 once m1 is acked) then leaves the group.
-			s1, err := NewSubscriber(suite.newClient(opts...))
+			s1, err := NewSubscriber(suite.newClient(append(opts, WithRetryBackoff(fastBackoff))...))
 			suite.Require().NoError(err)
 			handled := make(chan string, 10)
-			err = s1.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
+			err = s1.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func(error)) error {
 				// m2 is acked so committing it would commit past a nacked m1.
 				if tt.ack || msg.String() != "m1" {
 					ack()
 				} else {
-					nack()
+					nack(errors.New("nacked"))
 				}
 				select {
 				case handled <- msg.String():
@@ -294,7 +298,7 @@ func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
 			suite.Require().NoError(err)
 			defer s2.Close()
 			first := make(chan string, 1)
-			err = s2.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), _ func()) error {
+			err = s2.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), _ func(error)) error {
 				ack()
 				select {
 				case first <- msg.String():
@@ -309,6 +313,140 @@ func (suite *kafkaTestSuite) TestManualCommitRedelivery() {
 			case <-time.After(kafkaTimeout):
 				suite.FailNow("timeout waiting for second delivery")
 			}
+		})
+	}
+}
+
+// delivered is a delivery of a record to a handler.
+type delivered struct {
+	msg      string
+	attempt  string
+	at       time.Time
+	metadata map[string]string
+}
+
+// collect subscribes handler to topic and returns the deliveries, handler returns the error of each delivery.
+func (suite *kafkaTestSuite) collect(s *Subscriber, topic string, handler func(msg string, attempt string) error) <-chan delivered {
+	deliveries := make(chan delivered, 100)
+	err := s.Subscribe(context.Background(), topic, func(_ context.Context, msg pubsub.Message, md map[string]string) error {
+		deliveries <- delivered{msg: msg.String(), attempt: md[pubsub.MetadataDeliveryAttempt], at: time.Now(), metadata: md}
+		return handler(msg.String(), md[pubsub.MetadataDeliveryAttempt])
+	})
+	suite.Require().NoError(err)
+	return deliveries
+}
+
+// next returns the next delivery, it fails the test after kafkaTimeout.
+func (suite *kafkaTestSuite) next(deliveries <-chan delivered) delivered {
+	select {
+	case d := <-deliveries:
+		return d
+	case <-time.After(kafkaTimeout):
+		suite.FailNow("timeout waiting for a delivery")
+		return delivered{}
+	}
+}
+
+// TestRetryBackoff checks a nacked record is redelivered after the retry backoff, with its delivery attempt.
+func (suite *kafkaTestSuite) TestRetryBackoff() {
+	topic := fmt.Sprintf("kit-backoff-%s", id.New())
+	suite.publish(topic, "m1")
+
+	backoff := pubsub.Backoff{Initial: time.Second, Max: time.Second}
+	s, err := NewSubscriber(suite.newClient(WithConsumerGroup("group-"+id.New()), WithRetryBackoff(backoff)))
+	suite.Require().NoError(err)
+	defer s.Close()
+	deliveries := suite.collect(s, topic, func(_ string, attempt string) error {
+		if attempt == "1" {
+			return errors.New("failed")
+		}
+		return nil
+	})
+
+	first, second := suite.next(deliveries), suite.next(deliveries)
+	suite.Equal([]string{"m1:1", "m1:2"}, []string{first.msg + ":" + first.attempt, second.msg + ":" + second.attempt})
+	suite.GreaterOrEqual(second.at.Sub(first.at), backoff.Initial, "redelivered after the backoff")
+}
+
+// TestDeadLetter checks the records failing too many deliveries, or with a permanent error, are published
+// to the dead letter topic and acked, so the following records are consumed.
+func (suite *kafkaTestSuite) TestDeadLetter() {
+	tests := []struct {
+		name         string
+		deadLetter   bool
+		err          error
+		wantHandled  []string // msg:attempt
+		wantDead     bool
+		wantAttempts string
+	}{
+		{
+			name: "max attempts", deadLetter: true, err: errors.New("db unavailable"),
+			wantHandled: []string{"poison:1", "poison:2", "poison:3", "ok:1"}, wantDead: true, wantAttempts: "3",
+		},
+		{
+			name: "permanent error", deadLetter: true, err: pubsub.Permanent(errors.New("malformed payload")),
+			wantHandled: []string{"poison:1", "ok:1"}, wantDead: true, wantAttempts: "1",
+		},
+		{
+			name: "permanent error without dead letter topic is dropped", err: pubsub.Permanent(errors.New("malformed payload")),
+			wantHandled: []string{"poison:1", "ok:1"},
+		},
+	}
+	for _, tt := range tests {
+		suite.Run(tt.name, func() {
+			topic := fmt.Sprintf("kit-dlq-%s", id.New())
+			// published in a trace, the dead letter record continues it.
+			sc := trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+				SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+				TraceFlags: trace.FlagsSampled,
+			})
+			p, err := NewPublisher(suite.newClient(WithAutoTopicCreation()))
+			suite.Require().NoError(err)
+			defer p.Close()
+			for _, m := range []string{"poison", "ok"} {
+				suite.Require().NoError(p.Publish(trace.ContextWithSpanContext(context.Background(), sc), topic, []byte(m)))
+			}
+
+			opts := []Option{WithConsumerGroup("group-" + id.New()), WithRetryBackoff(fastBackoff), WithAutoTopicCreation()}
+			if tt.deadLetter {
+				opts = append(opts, WithDeadLetter("{topic}.dlq", 3))
+			}
+			s, err := NewSubscriber(suite.newClient(opts...))
+			suite.Require().NoError(err)
+			defer s.Close()
+
+			var poison delivered
+			deliveries := suite.collect(s, topic, func(msg string, _ string) error {
+				if msg == "poison" {
+					return tt.err
+				}
+				return nil
+			})
+			var handled []string
+			for range tt.wantHandled {
+				d := suite.next(deliveries)
+				if d.msg == "poison" {
+					poison = d
+				}
+				handled = append(handled, d.msg+":"+d.attempt)
+			}
+			suite.Equal(tt.wantHandled, handled)
+			if !tt.deadLetter {
+				return
+			}
+
+			dlq, err := NewSubscriber(suite.newClient(WithConsumerGroup("group-" + id.New())))
+			suite.Require().NoError(err)
+			defer dlq.Close()
+			dead := suite.next(suite.collect(dlq, topic+".dlq", func(string, string) error { return nil }))
+			suite.Equal("poison", dead.msg)
+			suite.Equal(topic, dead.metadata[deadLetterTopicHeader])
+			suite.Equal(poison.metadata["partition"], dead.metadata[deadLetterPartitionHeader])
+			suite.Equal(poison.metadata["offset"], dead.metadata[deadLetterOffsetHeader])
+			suite.Equal(tt.wantAttempts, dead.metadata[deadLetterAttemptsHeader])
+			suite.Equal(tt.err.Error(), dead.metadata[deadLetterErrorHeader])
+			suite.Contains(dead.metadata["traceparent"], sc.TraceID().String(), "the dead letter record continues the trace")
 		})
 	}
 }

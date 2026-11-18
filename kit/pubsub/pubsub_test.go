@@ -134,7 +134,10 @@ func TestAckOnSuccess(t *testing.T) {
 				return tt.err
 			}
 			ack := func() { calls = append(calls, "ack") }
-			nack := func() { calls = append(calls, "nack") }
+			nack := func(err error) {
+				calls = append(calls, "nack")
+				assert.Equal(t, tt.err, err, "nacked with the handler error")
+			}
 
 			err := AckOnSuccess(handler)(WithTopic(context.Background(), "orders"), Message("hello"), map[string]string{"k": "v"}, ack, nack)
 			assert.ErrorIs(t, err, tt.err)

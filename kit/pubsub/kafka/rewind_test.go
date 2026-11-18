@@ -110,11 +110,11 @@ func TestRewinder(t *testing.T) {
 				rec := &kgo.Record{Topic: "t", Partition: s.partition, Offset: s.offset}
 				switch s.op {
 				case deliver:
-					generation, skip := r.deliver(rec)
+					d, skip := r.deliver(rec)
 					if skip {
 						skipped = append(skipped, key)
 					}
-					generations[key] = generation
+					generations[key] = d.generation
 				case ack:
 					generation, ok := generations[key]
 					require.True(t, ok, "%s is not delivered", key)
@@ -131,6 +131,87 @@ func TestRewinder(t *testing.T) {
 			assert.Equal(t, tt.wantCommitted, committed)
 			assert.Equal(t, tt.wantSkipped, skipped)
 			assert.Equal(t, tt.wantRewinds, gotRewinds)
+		})
+	}
+}
+
+func TestRewinderAttempts(t *testing.T) {
+	type step struct {
+		op     string // deliver, ack, nack or rewind (end of the fetch).
+		offset int64
+	}
+	tests := []struct {
+		name         string
+		steps        []step
+		wantAttempts []string // offset:attempt of each handled delivery.
+		wantFailures int      // failures of the partition at the end.
+	}{
+		{
+			name:         "first delivery",
+			steps:        []step{{"deliver", 0}, {"ack", 0}},
+			wantAttempts: []string{"0:1"},
+		},
+		{
+			name: "attempts are counted on each nack",
+			steps: []step{
+				{"deliver", 0}, {"nack", 0}, {"rewind", 0},
+				{"deliver", 0}, {"nack", 0}, {"rewind", 0},
+				{"deliver", 0},
+			},
+			wantAttempts: []string{"0:1", "0:2", "0:3"},
+			wantFailures: 2,
+		},
+		{
+			name: "ack resets the failures",
+			steps: []step{
+				{"deliver", 0}, {"nack", 0}, {"rewind", 0},
+				{"deliver", 0}, {"ack", 0}, {"deliver", 1},
+			},
+			wantAttempts: []string{"0:1", "0:2", "1:1"},
+		},
+		{
+			name: "the following records are first deliveries",
+			steps: []step{
+				{"deliver", 0}, {"nack", 0}, {"rewind", 0},
+				{"deliver", 0}, {"ack", 0}, {"deliver", 1}, {"nack", 1}, {"rewind", 0},
+				{"deliver", 1},
+			},
+			wantAttempts: []string{"0:1", "0:2", "1:1", "1:2"},
+			wantFailures: 1,
+		},
+		{
+			name: "late nack of a preceding record counts its failure",
+			steps: []step{
+				{"deliver", 0}, {"deliver", 1}, {"nack", 1}, {"nack", 0}, {"rewind", 0},
+				{"deliver", 0},
+			},
+			wantAttempts: []string{"0:1", "1:1", "0:2"},
+			wantFailures: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRewinder()
+			deliveries := map[int64]delivery{}
+			var attempts []string
+			for _, s := range tt.steps {
+				rec := &kgo.Record{Topic: "t", Offset: s.offset}
+				switch s.op {
+				case "deliver":
+					d, skip := r.deliver(rec)
+					require.False(t, skip)
+					deliveries[s.offset] = d
+					attempts = append(attempts, fmt.Sprintf("%d:%d", s.offset, d.attempt))
+				case "ack":
+					r.ack(rec, deliveries[s.offset].generation, func() {})
+				case "nack":
+					r.nack(rec, deliveries[s.offset].generation)
+				case "rewind":
+					r.rewind()
+				}
+			}
+			assert.Equal(t, tt.wantAttempts, attempts)
+			assert.Equal(t, tt.wantFailures, r.failures("t", 0))
 		})
 	}
 }

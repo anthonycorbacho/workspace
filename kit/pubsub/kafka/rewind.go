@@ -20,6 +20,18 @@ type partitionRewind struct {
 	offset kgo.EpochOffset
 	// pending reports whether the partition must be rewound to offset after the current fetch.
 	pending bool
+	// failures is the number of failed deliveries of the record at failedOffset, the record the
+	// partition is rewound to, it is reset once the record is acked.
+	failures     int
+	failedOffset int64
+}
+
+// delivery is a delivery of a record.
+type delivery struct {
+	// generation is the generation of the record partition when the record was delivered.
+	generation uint64
+	// attempt is the delivery attempt of the record, from 1.
+	attempt int
 }
 
 // rewinder rewinds the partitions of the nacked records.
@@ -37,17 +49,21 @@ func newRewinder() *rewinder {
 	return &rewinder{partitions: map[topicPartition]*partitionRewind{}}
 }
 
-// deliver returns the generation of the record partition, skip reports whether the record must
-// not be handled as its partition is going to be rewound before it.
-func (r *rewinder) deliver(rec *kgo.Record) (generation uint64, skip bool) {
+// deliver returns the delivery of the record, skip reports whether the record must not be handled
+// as its partition is going to be rewound before it.
+func (r *rewinder) deliver(rec *kgo.Record) (d delivery, skip bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	p, ok := r.partitions[topicPartition{rec.Topic, rec.Partition}]
 	if !ok {
-		return 0, false
+		return delivery{attempt: 1}, false
 	}
-	return p.generation, p.pending
+	d = delivery{generation: p.generation, attempt: 1}
+	if p.failures > 0 && rec.Offset == p.failedOffset {
+		d.attempt = p.failures + 1
+	}
+	return d, p.pending
 }
 
 // ack calls commit unless the partition of the record delivered at generation was rewound since.
@@ -56,10 +72,14 @@ func (r *rewinder) ack(rec *kgo.Record, generation uint64, commit func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if p, ok := r.partitions[topicPartition{rec.Topic, rec.Partition}]; ok && p.generation != generation {
+	p, ok := r.partitions[topicPartition{rec.Topic, rec.Partition}]
+	if ok && p.generation != generation {
 		return
 	}
 	commit()
+	if ok && rec.Offset >= p.failedOffset {
+		p.failures = 0
+	}
 }
 
 // nack rewinds the partition of the record delivered at generation to the record.
@@ -83,6 +103,30 @@ func (r *rewinder) nack(rec *kgo.Record, generation uint64) {
 	}
 	p.pending = true
 	p.generation++
+
+	// the failures are counted for the record the partition is rewound to.
+	if p.failures > 0 && p.failedOffset == p.offset.Offset {
+		if rec.Offset == p.failedOffset {
+			p.failures++
+		}
+		return
+	}
+	p.failedOffset = p.offset.Offset
+	p.failures = 0
+	if rec.Offset == p.failedOffset {
+		p.failures = 1
+	}
+}
+
+// failures returns the number of failed deliveries of the record the partition is rewound to.
+func (r *rewinder) failures(topic string, partition int32) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if p, ok := r.partitions[topicPartition{topic, partition}]; ok {
+		return p.failures
+	}
+	return 0
 }
 
 // rewind returns the offsets the partitions must be consumed from, the rewinds are then

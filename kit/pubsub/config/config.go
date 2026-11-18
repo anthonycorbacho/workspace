@@ -241,6 +241,9 @@ type NATSSubscriber struct {
 	ConsumerName string `yaml:"consumerName"`
 	// ConsumerGroupName is the queue group the subscriptions join.
 	ConsumerGroupName string `yaml:"consumerGroupName"`
+	// RetryBackoff is the delay before redelivering a nacked message, pubsub.DefaultBackoff if not set.
+	// The maximum deliveries are set on the consumer (MaxDeliver).
+	RetryBackoff *kitpubsub.Backoff `yaml:"retryBackoff"`
 }
 
 func (natspub *NATSPublisher) publisher(ctx context.Context) (kitpubsub.Publisher, func(), error) {
@@ -273,7 +276,11 @@ func (natssub *NATSSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscr
 		return nil, noop, errors.Wrap(err, "failed to get consumer info")
 	}
 
-	sub, err := kitnats.NewSubscriber(natssub.ConsumerGroupName, con, js, cons)
+	var subOpts []kitnats.SubscriberOption
+	if natssub.RetryBackoff != nil {
+		subOpts = append(subOpts, kitnats.WithRetryBackoff(*natssub.RetryBackoff))
+	}
+	sub, err := kitnats.NewSubscriber(natssub.ConsumerGroupName, con, js, cons, subOpts...)
 	if err != nil {
 		con.Close()
 		return nil, noop, errors.Wrap(err, "failed to create nats subscriber")

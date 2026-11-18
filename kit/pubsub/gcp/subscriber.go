@@ -3,6 +3,8 @@ package gcp
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strconv"
 	"sync"
 	"time"
 
@@ -93,6 +95,11 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler
 // SubscribeWithAck consumes Google Cloud Pub/Sub subscription like Subscribe, the handler acknowledges the messages.
 // The ack deadline of a message that is neither acked nor nacked is extended up to MaxExtension
 // (see WithMaxExtension), the message is then redelivered.
+//
+// The redelivery of the nacked messages is configured on the subscription: its retry policy sets the
+// backoff, and its dead letter policy the maximum delivery attempts and the dead letter topic. A message
+// nacked with a permanent error (see pubsub.Permanent) is redelivered too, until the dead letter policy
+// stops it. With a dead letter policy, the delivery attempt is in the metadata (pubsub.MetadataDeliveryAttempt).
 //
 // The messages are received until ctx is done or the subscriber is closed.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
@@ -188,13 +195,22 @@ func (s *Subscriber) receive(ctx context.Context, sub *gcppubsub.Subscriber, han
 		ack := func() {
 			m.Ack()
 		}
-		nack := func() {
+		// Pub/Sub has no way to reject a message for good, a message nacked with a permanent error is
+		// redelivered until the dead letter policy of the subscription stops it.
+		nack := func(error) {
 			m.Nack()
+		}
+
+		// the attributes of the message are not modified.
+		metadata := make(map[string]string, len(m.Attributes)+1)
+		maps.Copy(metadata, m.Attributes)
+		if m.DeliveryAttempt != nil {
+			metadata[pubsub.MetadataDeliveryAttempt] = strconv.Itoa(*m.DeliveryAttempt)
 		}
 
 		// Process the message
 		// in case of error, we record and label the error in the span.
-		if err := handler(ctx, m.Data, m.Attributes, ack, nack); err != nil {
+		if err := handler(ctx, m.Data, metadata, ack, nack); err != nil {
 			tracing.RecordError(span, err)
 		}
 	})

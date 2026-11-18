@@ -40,6 +40,13 @@ type KafkaSubscriber struct {
 	RegexEnabled bool `yaml:"regexEnabled" env:"KAFKA_REGEX_ENABLED,overwrite"`
 	// RegexPatterns are the patterns of the consumed topics when RegexEnabled is set.
 	RegexPatterns []string `yaml:"regexPatterns" env:"KAFKA_REGEX_PATTERNS,overwrite"`
+	// RetryBackoff is the delay before consuming a nacked record again, pubsub.DefaultBackoff if not set.
+	RetryBackoff *kitpubsub.Backoff `yaml:"retryBackoff"`
+	// DeadLetterTopic is the topic of the records failing MaxDeliveryAttempts deliveries or with a permanent
+	// error, "{topic}" is replaced by the topic of the record (eg: "{topic}.dlq"), see kafka.WithDeadLetter.
+	DeadLetterTopic string `yaml:"deadLetterTopic" env:"KAFKA_DEAD_LETTER_TOPIC,overwrite"`
+	// MaxDeliveryAttempts is the number of deliveries of a record before it is dead lettered.
+	MaxDeliveryAttempts int `yaml:"maxDeliveryAttempts" env:"KAFKA_MAX_DELIVERY_ATTEMPTS,overwrite"`
 }
 
 func (s *KafkaSASL) option() (kitkafka.Option, error) {
@@ -106,6 +113,12 @@ func (k *KafkaSubscriber) subscriber(ctx context.Context) (kitpubsub.Subscriber,
 			return nil, noop, errors.New("kafka regex enabled but no regex patterns given")
 		}
 		opts = append(opts, kitkafka.WithRegex(k.RegexPatterns))
+	}
+	if k.RetryBackoff != nil {
+		opts = append(opts, kitkafka.WithRetryBackoff(*k.RetryBackoff))
+	}
+	if k.DeadLetterTopic != "" || k.MaxDeliveryAttempts != 0 {
+		opts = append(opts, kitkafka.WithDeadLetter(k.DeadLetterTopic, k.MaxDeliveryAttempts))
 	}
 	client, err := kitkafka.NewClient(k.Brokers, opts...)
 	if err != nil {

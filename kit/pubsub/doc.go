@@ -22,6 +22,27 @@
 //   - mqtt: there is no negative acknowledgement, ack and nack are no-ops and the message is
 //     acknowledged to the broker once the handler returned.
 //
+// # Retries and dead letters
+//
+// A nacked message is redelivered after a backoff, and a message that can't be processed is moved
+// aside instead of being retried forever. Return Permanent(err) from the handler when retrying will
+// not help (eg: a malformed payload). The delivery attempt of a message, from 1, is in the metadata
+// (MetadataDeliveryAttempt) when the backend counts it.
+//
+//   - kafka: the partition of a nacked record is paused for the backoff (kafka.WithRetryBackoff). With
+//     a dead letter topic (kafka.WithDeadLetter), a record failing its maximum deliveries, or with a
+//     permanent error, is published to the dead letter topic and acked. Without one, a record is
+//     redelivered until acked, and a record failing with a permanent error is dropped and logged.
+//   - nats: a nacked message is redelivered after the backoff (nats.WithRetryBackoff), up to the
+//     consumer MaxDeliver, a message failing with a permanent error is terminated.
+//   - gcp: the subscription retry policy sets the backoff and its dead letter policy the maximum
+//     deliveries and the dead letter topic. Pub/Sub can't reject a message for good: a message failing
+//     with a permanent error is redelivered until the dead letter policy stops it.
+//   - mqtt: the messages are not redelivered.
+//
+// The service still owns the policy: which errors are permanent, the dead letter topics, alerting on
+// them and replaying their messages. The delivery is at least once, the handlers must be idempotent.
+//
 // # Tracing
 //
 // The publishers start a producer span "publish <topic>" and inject its context in the message

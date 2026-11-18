@@ -84,8 +84,7 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 		}
 
 		// MQTT has no concept of Ack and Nack, the client acknowledges the message once the handler returned.
-		noop := func() {}
-		if err := handler(ctx, msg.Payload, metadata, noop, noop); err != nil {
+		if err := handler(ctx, msg.Payload, metadata, func() {}, func(error) {}); err != nil {
 			tracing.RecordError(span, err)
 		}
 	})

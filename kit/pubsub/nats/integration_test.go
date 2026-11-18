@@ -2,6 +2,7 @@ package nats
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -352,39 +353,69 @@ func (n *natsTestSuite) TestPublishAndSubscribeMetadata() {
 	}
 }
 
-func (n *natsTestSuite) TestSubscribeWithAckNackRedelivery() {
-	f := n.newFixture()
-	p, err := NewPublisher(f.nc, f.js)
-	n.Require().NoError(err)
-	s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer)
-	n.Require().NoError(err)
+// TestSubscribeWithAckNack checks a nacked message is redelivered after the retry backoff with its delivery
+// attempt, and a message nacked with a permanent error is not redelivered.
+func (n *natsTestSuite) TestSubscribeWithAckNack() {
+	backoff := pubsub.Backoff{Initial: time.Second, Max: time.Second}
+	tests := []struct {
+		name         string
+		err          error
+		wantAttempts []string
+	}{
+		{name: "nack redelivers after the backoff", err: errors.New("db unavailable"), wantAttempts: []string{"1", "2"}},
+		{name: "permanent error is terminated", err: pubsub.Permanent(errors.New("malformed payload")), wantAttempts: []string{"1"}},
+	}
+	for _, tt := range tests {
+		n.Run(tt.name, func() {
+			f := n.newFixture()
+			p, err := NewPublisher(f.nc, f.js)
+			n.Require().NoError(err)
+			s, err := NewSubscriber(f.consumer.Name, f.nc, f.js, f.consumer, WithRetryBackoff(backoff))
+			n.Require().NoError(err)
 
-	var mu sync.Mutex
-	deliveries := 0
-	ch := make(chan string, 2)
-	err = s.SubscribeWithAck(context.Background(), f.subject, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
-		mu.Lock()
-		deliveries++
-		first := deliveries == 1
-		mu.Unlock()
-		if first {
-			nack()
-		} else {
-			ack()
-		}
-		ch <- msg.String()
-		return nil
-	})
-	n.Require().NoError(err)
-	n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("redeliver me")))
+			type delivery struct {
+				attempt string
+				at      time.Time
+			}
+			ch := make(chan delivery, 10)
+			err = s.SubscribeWithAck(context.Background(), f.subject, func(_ context.Context, _ pubsub.Message, md map[string]string, ack func(), nack func(error)) error {
+				attempt := md[pubsub.MetadataDeliveryAttempt]
+				ch <- delivery{attempt: attempt, at: time.Now()}
+				if attempt == "1" {
+					nack(tt.err)
+				} else {
+					ack()
+				}
+				return nil
+			})
+			n.Require().NoError(err)
+			n.Require().NoError(p.Publish(context.Background(), f.subject, []byte("message")))
 
-	for i := range 2 {
-		select {
-		case msg := <-ch:
-			n.Equal("redeliver me", msg, "delivery %d", i)
-		case <-time.After(10 * time.Second):
-			n.FailNow("timeout waiting for redelivery")
-		}
+			var got []delivery
+			for range tt.wantAttempts {
+				select {
+				case d := <-ch:
+					got = append(got, d)
+				case <-time.After(10 * time.Second):
+					n.FailNow("timeout waiting for a delivery")
+				}
+			}
+			attempts := make([]string, 0, len(got))
+			for _, d := range got {
+				attempts = append(attempts, d.attempt)
+			}
+			n.Equal(tt.wantAttempts, attempts)
+			if len(got) == 2 {
+				n.GreaterOrEqual(got[1].at.Sub(got[0].at), backoff.Initial, "redelivered after the backoff")
+				return
+			}
+			// a terminated message is not redelivered.
+			select {
+			case d := <-ch:
+				n.Failf("terminated message redelivered", "attempt %s", d.attempt)
+			case <-time.After(2 * backoff.Initial):
+			}
+		})
 	}
 }
 

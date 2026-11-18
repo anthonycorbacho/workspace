@@ -2,6 +2,7 @@ package gcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -226,13 +227,13 @@ func (g *gcpTestSuite) TestSubscribeWithAckNackRedelivery() {
 	var mu sync.Mutex
 	deliveries := 0
 	ch := make(chan string, 2)
-	err = s.SubscribeWithAck(ctx, sub, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
+	err = s.SubscribeWithAck(ctx, sub, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func(error)) error {
 		mu.Lock()
 		deliveries++
 		first := deliveries == 1
 		mu.Unlock()
 		if first {
-			nack()
+			nack(errors.New("nacked"))
 		} else {
 			ack()
 		}
@@ -251,6 +252,54 @@ func (g *gcpTestSuite) TestSubscribeWithAckNackRedelivery() {
 			g.Equal("redeliver me", msg, "delivery %d", i)
 		case <-time.After(10 * time.Second):
 			g.FailNow("timeout waiting for redelivery")
+		}
+	}
+}
+
+// TestDeliveryAttempt checks the delivery attempt of a subscription with a dead letter policy is in the metadata.
+func (g *gcpTestSuite) TestDeliveryAttempt() {
+	ctx := context.Background()
+	topic := fmt.Sprintf("topic-%s", id.New())
+	dlq := fmt.Sprintf("dlq-%s", id.New())
+	sub := fmt.Sprintf("sub-%s", id.New())
+	for _, t := range []string{topic, dlq} {
+		_, err := g.admin.TopicAdminClient.CreateTopic(ctx, &pubsubpb.Topic{Name: resourceName(testProject, "topics", t)})
+		g.Require().NoError(err)
+	}
+	_, err := g.admin.SubscriptionAdminClient.CreateSubscription(ctx, &pubsubpb.Subscription{
+		Name:  resourceName(testProject, "subscriptions", sub),
+		Topic: resourceName(testProject, "topics", topic),
+		DeadLetterPolicy: &pubsubpb.DeadLetterPolicy{
+			DeadLetterTopic:     resourceName(testProject, "topics", dlq),
+			MaxDeliveryAttempts: 5,
+		},
+	})
+	g.Require().NoError(err)
+
+	p, err := NewPublisher(g.newClient())
+	g.Require().NoError(err)
+	defer p.Close()
+	s, err := NewSubscriber(g.newClient(), WithMaxOutstandingMessages(1))
+	g.Require().NoError(err)
+	defer s.Close()
+
+	attempts := make(chan string, 10)
+	err = s.Subscribe(ctx, sub, func(_ context.Context, _ pubsub.Message, md map[string]string) error {
+		attempts <- md[pubsub.MetadataDeliveryAttempt]
+		if md[pubsub.MetadataDeliveryAttempt] == "1" {
+			return errors.New("failed")
+		}
+		return nil
+	})
+	g.Require().NoError(err)
+	g.Require().NoError(p.Publish(ctx, topic, []byte("message")))
+
+	for _, want := range []string{"1", "2"} {
+		select {
+		case got := <-attempts:
+			g.Equal(want, got)
+		case <-time.After(10 * time.Second):
+			g.FailNow("timeout waiting for a delivery")
 		}
 	}
 }

@@ -3,6 +3,7 @@ package nats
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
@@ -28,13 +29,25 @@ type Subscriber struct {
 	consumer   *nats.ConsumerInfo
 	nc         *nats.Conn
 	js         nats.JetStreamContext
+	backoff    pubsub.Backoff
+}
+
+// SubscriberOption configures a Subscriber.
+type SubscriberOption func(*Subscriber)
+
+// WithRetryBackoff sets the delay before redelivering a nacked message, pubsub.DefaultBackoff by default.
+// The consumer MaxDeliver bounds the deliveries of a message, see the consumer configuration.
+func WithRetryBackoff(b pubsub.Backoff) SubscriberOption {
+	return func(s *Subscriber) {
+		s.backoff = b
+	}
 }
 
 // NewSubscriber creates a NATS JetStream subscriber using the connection natsClient and its
 // JetStream context jetStreamCtx, the subscriptions are bound to consumer and join queueGroup.
 //
 // Close must be called to stop receiving messages and close the connection.
-func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.JetStreamContext, consumer *nats.ConsumerInfo) (*Subscriber, error) {
+func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.JetStreamContext, consumer *nats.ConsumerInfo, opts ...SubscriberOption) (*Subscriber, error) {
 	if len(queueGroup) == 0 {
 		return nil, errors.New("invalid queueGroup")
 	}
@@ -48,7 +61,7 @@ func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.J
 		return nil, errors.New("invalid nats consumer")
 	}
 
-	return &Subscriber{
+	s := &Subscriber{
 		closing:    make(chan struct{}, 1),
 		closed:     false,
 		closedLock: sync.Mutex{},
@@ -56,7 +69,12 @@ func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.J
 		nc:         natsClient,
 		js:         jetStreamCtx,
 		consumer:   consumer,
-	}, nil
+		backoff:    pubsub.DefaultBackoff,
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // Close notifies the Subscriber to stop processing messages on all subscriptions, and terminate the connection.
@@ -92,6 +110,10 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subje
 
 // SubscribeWithAck consumes the NATS subject like Subscribe, the handler acknowledges the messages.
 // A message that is neither acked nor nacked is redelivered once the consumer AckWait expired.
+//
+// A nacked message is redelivered after the retry backoff (see WithRetryBackoff), up to the consumer
+// MaxDeliver, a message nacked with a permanent error (see pubsub.Permanent) is terminated: it is not
+// redelivered. The delivery attempt is in the metadata (pubsub.MetadataDeliveryAttempt).
 //
 // The messages received once ctx is done or the subscriber is closed are nacked.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
@@ -145,15 +167,26 @@ func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.
 			metadata[k] = v[0]
 		}
 	}
+	attempt := 1
+	if md, err := msg.Metadata(); err == nil {
+		attempt = int(md.NumDelivered)
+	}
+	metadata[pubsub.MetadataDeliveryAttempt] = strconv.Itoa(attempt)
 
 	ack := func() {
 		if err := msg.Ack(); err != nil {
 			span.RecordError(err)
 		}
 	}
-	nack := func() {
-		if err := msg.Nak(); err != nil {
-			span.RecordError(err)
+	nack := func(err error) {
+		if pubsub.IsPermanent(err) {
+			if termErr := msg.Term(); termErr != nil {
+				span.RecordError(termErr)
+			}
+			return
+		}
+		if nakErr := msg.NakWithDelay(s.backoff.Delay(attempt)); nakErr != nil {
+			span.RecordError(nakErr)
 		}
 	}
 

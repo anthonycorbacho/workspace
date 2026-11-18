@@ -36,15 +36,16 @@ func (m Message) String() string {
 type Handler func(ctx context.Context, msg Message, metadata map[string]string) error
 
 // HandlerWithAck handles a message received by a subscription, like Handler, and acknowledges it:
-// ack acknowledges the message, nack asks the backend to redeliver it when it supports it.
-type HandlerWithAck func(ctx context.Context, msg Message, metadata map[string]string, ack func(), nack func()) error
+// ack acknowledges the message, nack asks the backend to redeliver it when it supports it. The error
+// given to nack is the reason of the failure: a permanent error (see Permanent) is not redelivered.
+type HandlerWithAck func(ctx context.Context, msg Message, metadata map[string]string, ack func(), nack func(err error)) error
 
 // AckOnSuccess returns a HandlerWithAck acking the message once handler succeeded and nacking it
-// when handler failed, acking before would lose the messages the handler failed to process.
+// with the handler error when it failed, acking before would lose the messages the handler failed to process.
 func AckOnSuccess(handler Handler) HandlerWithAck {
-	return func(ctx context.Context, msg Message, metadata map[string]string, ack func(), nack func()) error {
+	return func(ctx context.Context, msg Message, metadata map[string]string, ack func(), nack func(err error)) error {
 		if err := handler(ctx, msg, metadata); err != nil {
-			nack()
+			nack(err)
 			return err
 		}
 		ack()

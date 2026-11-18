@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -302,10 +303,10 @@ func (m *mqttTestSuite) TestHandlerErrorKeepsSubscription() {
 	m.Require().NoError(err)
 
 	ch := make(chan string, 2)
-	err = s.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func()) error {
+	err = s.SubscribeWithAck(context.Background(), topic, func(_ context.Context, msg pubsub.Message, _ map[string]string, ack func(), nack func(error)) error {
 		// ack and nack are no-ops in MQTT, calling them must be safe.
 		ack()
-		nack()
+		nack(errors.New("nacked"))
 		ch <- msg.String()
 		return fmt.Errorf("handler failed for %s", msg)
 	})

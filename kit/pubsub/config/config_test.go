@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -150,7 +151,12 @@ kafkaSubscriber:
   sasl:
     mechanism: "PLAIN"
     username: "user"
-    password: "pwd"`)
+    password: "pwd"
+  retryBackoff:
+    initial: 1s
+    max: 1m
+  deadLetterTopic: "{topic}.dlq"
+  maxDeliveryAttempts: 5`)
 	c := Config{}
 	err := kitconfig.From(rawConf, &c)
 	if !assert.NoError(t, err) {
@@ -159,6 +165,22 @@ kafkaSubscriber:
 	assert.Equal(t, []string{"broker1:9092", "broker2:9092"}, c.KafkaSubscriber.Brokers)
 	assert.Equal(t, "my-group", c.KafkaSubscriber.ConsumerGroup)
 	assert.Equal(t, "PLAIN", c.KafkaSubscriber.SASL.Mechanism)
+	assert.Equal(t, &kitpubsub.Backoff{Initial: time.Second, Max: time.Minute}, c.KafkaSubscriber.RetryBackoff)
+	assert.Equal(t, "{topic}.dlq", c.KafkaSubscriber.DeadLetterTopic)
+	assert.Equal(t, 5, c.KafkaSubscriber.MaxDeliveryAttempts)
+}
+
+func TestKafkaInvalidDeadLetter(t *testing.T) {
+	c := Config{
+		Kind: "kafka-subscriber",
+		KafkaSubscriber: &KafkaSubscriber{
+			KafkaConnection:     KafkaConnection{Brokers: []string{"localhost:9092"}},
+			MaxDeliveryAttempts: 3,
+		},
+	}
+	_, closeFn, err := c.Subscriber(context.TODO())
+	defer closeFn()
+	assert.ErrorContains(t, err, "dead letter topic is required")
 }
 
 func TestKafkaRegexWithoutPatterns(t *testing.T) {

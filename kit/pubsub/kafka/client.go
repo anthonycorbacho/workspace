@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
@@ -17,6 +18,8 @@ type Client struct {
 	autoCommitEnabled bool
 	regexEnabled      bool
 	regexPatterns     map[string]struct{}
+	retryBackoff      pubsub.Backoff
+	deadLetter        deadLetter
 }
 
 // config represents a Kafka client configuration.
@@ -31,6 +34,8 @@ type config struct {
 	regexEnabled      bool
 	regexPatterns     []string
 	autoTopicCreation bool
+	retryBackoff      pubsub.Backoff
+	deadLetter        deadLetter
 }
 
 // Option configures a Client.
@@ -108,6 +113,30 @@ func WithAutoTopicCreation() Option {
 	}
 }
 
+// WithRetryBackoff sets the delay before consuming a nacked record again, pubsub.DefaultBackoff by default.
+// The partition of the record is paused meanwhile, the other partitions are still consumed.
+func WithRetryBackoff(b pubsub.Backoff) Option {
+	return func(c *config) {
+		c.retryBackoff = b
+	}
+}
+
+// WithDeadLetter publishes the records failing maxAttempts deliveries, or failing with a permanent error
+// (see pubsub.Permanent), to a dead letter topic and acks them, so they don't block their partition.
+//
+// topic is the name of the dead letter topic, "{topic}" is replaced by the topic of the record (eg:
+// "{topic}.dlq"), it must exist unless WithAutoTopicCreation is set. The dead letter records keep the
+// key, value and headers of the records, the headers dead-letter-topic, dead-letter-partition,
+// dead-letter-offset, dead-letter-attempts and dead-letter-error describe the failure.
+//
+// Without a dead letter topic, a record is redelivered until it is acked, and a record failing with a
+// permanent error is dropped and logged.
+func WithDeadLetter(topic string, maxAttempts int) Option {
+	return func(c *config) {
+		c.deadLetter = deadLetter{topic: topic, maxAttempts: maxAttempts}
+	}
+}
+
 // NewClient creates a Kafka client connecting to brokers, it connects lazily.
 func NewClient(brokers []string, options ...Option) (*Client, error) {
 	if len(brokers) == 0 {
@@ -119,10 +148,14 @@ func NewClient(brokers []string, options ...Option) (*Client, error) {
 		clientID:          "kafka-client",
 		autoCommitEnabled: false,
 		regexEnabled:      false,
+		retryBackoff:      pubsub.DefaultBackoff,
 	}
 
 	for _, o := range options {
 		o(opts)
+	}
+	if err := opts.deadLetter.validate(); err != nil {
+		return nil, err
 	}
 
 	// Build kafka options
@@ -201,6 +234,8 @@ func NewClient(brokers []string, options ...Option) (*Client, error) {
 		autoCommitEnabled: opts.autoCommitEnabled,
 		regexEnabled:      opts.regexEnabled,
 		regexPatterns:     regexPatterns,
+		retryBackoff:      opts.retryBackoff,
+		deadLetter:        opts.deadLetter,
 	}, nil
 }
 

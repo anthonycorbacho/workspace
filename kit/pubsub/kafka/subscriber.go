@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -95,6 +96,12 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler
 // Nacking a record rewinds its partition: the record and the following ones are consumed again,
 // the acks of the records of the partition delivered before the nack are ignored.
 //
+// A nacked record is consumed again after the retry backoff (see WithRetryBackoff), its partition is
+// paused meanwhile. The record is redelivered until it is acked, unless a dead letter topic is set (see
+// WithDeadLetter): it then gets maxAttempts deliveries. The delivery attempt is in the metadata
+// (pubsub.MetadataDeliveryAttempt), the attempts are counted in memory: they restart from 1 when the
+// partition is assigned to another consumer.
+//
 // The context of the handled records holds the values of ctx (eg: logger fields, baggage) but the
 // subscription is not canceled with ctx, it lasts until the subscriber is closed.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
@@ -150,14 +157,16 @@ func (s *Subscriber) poller() {
 			fetches.EachRecord(s.handleRecord)
 
 			// set between the polls, it discards the records buffered after the rewound offsets.
-			s.client.client.SetOffsets(s.rewinds.rewind())
+			offsets := s.rewinds.rewind()
+			s.client.client.SetOffsets(offsets)
+			s.pauseRewound(offsets)
 		}
 	}
 }
 
 // handleRecord handles record with the subscription of its topic.
 func (s *Subscriber) handleRecord(record *kgo.Record) {
-	generation, skip := s.rewinds.deliver(record)
+	d, skip := s.rewinds.deliver(record)
 	if skip {
 		// the partition is rewound to a nacked record before it.
 		return
@@ -184,9 +193,10 @@ func (s *Subscriber) handleRecord(record *kgo.Record) {
 	for _, h := range record.Headers {
 		metadata[h.Key] = string(h.Value)
 	}
+	metadata[pubsub.MetadataDeliveryAttempt] = strconv.Itoa(d.attempt)
 
 	ack := func() {
-		s.rewinds.ack(record, generation, func() {
+		s.rewinds.ack(record, d.generation, func() {
 			if s.client.autoCommitEnabled {
 				s.client.client.MarkCommitRecords(record)
 				return
@@ -197,12 +207,56 @@ func (s *Subscriber) handleRecord(record *kgo.Record) {
 		})
 	}
 
-	nack := func() {
-		s.rewinds.nack(record, generation)
+	nack := func(err error) {
+		s.nack(ctx, span, record, d, err, ack)
 	}
 
 	if err := sub.handler(ctx, record.Value, metadata, ack, nack); err != nil {
 		tracing.RecordError(span, err)
+	}
+}
+
+// nack handles the failed delivery d of record: the record is published to the dead letter topic when
+// it failed too many deliveries or with a permanent error, otherwise its partition is rewound to it.
+func (s *Subscriber) nack(ctx context.Context, span trace.Span, record *kgo.Record, d delivery, err error, ack func()) {
+	permanent := pubsub.IsPermanent(err)
+	dl := s.client.deadLetter
+	switch {
+	case dl.enabled() && (permanent || d.attempt >= dl.maxAttempts):
+		if dlErr := s.publishDeadLetter(ctx, record, d.attempt, err); dlErr != nil {
+			// the record is not lost: it is consumed again, and published to the dead letter topic again.
+			tracing.RecordError(span, dlErr)
+			log.L().Warn(ctx, "kafka record not dead lettered, it is redelivered", log.Error(dlErr))
+			s.rewinds.nack(record, d.generation)
+			return
+		}
+		ack()
+	case permanent:
+		log.L().Error(ctx, "kafka record dropped: permanent error and no dead letter topic", log.String("topic", record.Topic),
+			log.Int64("partition", int64(record.Partition)), log.Int64("offset", record.Offset), log.Error(err))
+		ack()
+	default:
+		s.rewinds.nack(record, d.generation)
+	}
+}
+
+// pauseRewound pauses the partitions rewound to a failed record for the retry backoff, so the record is not
+// redelivered right away. The other partitions are still consumed.
+func (s *Subscriber) pauseRewound(offsets map[string]map[int32]kgo.EpochOffset) {
+	for topic, partitions := range offsets {
+		for partition := range partitions {
+			delay := s.client.retryBackoff.Delay(s.rewinds.failures(topic, partition))
+			if delay <= 0 {
+				continue
+			}
+			paused := map[string][]int32{topic: {partition}}
+			s.client.client.PauseFetchPartitions(paused)
+			time.AfterFunc(delay, func() {
+				if !s.isClosed() {
+					s.client.client.ResumeFetchPartitions(paused)
+				}
+			})
+		}
 	}
 }
 
