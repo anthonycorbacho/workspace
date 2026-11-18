@@ -71,6 +71,35 @@ if gatewayErr != nil {
 The requests are validated with their protovalidate rules, and the handlers return coded errors
 (see [errors](errors) and [application-error.md](../sdlc/documentation/application-error.md)).
 
+### gRPC TLS
+The gateway connects to the gRPC address using its own client. Configure both the server and gateway
+credentials when enabling TLS. `WithGatewayDialOptions` replaces the default plaintext transport
+option, so include `grpc.WithTransportCredentials` or `grpc.WithCredentialsBundle`.
+
+```go
+serverCreds, err := credentials.NewServerTLSFromFile("server.crt", "server.key")
+if err != nil {
+	return err
+}
+// The name must match the server certificate, including when dialing a loopback address.
+gatewayCreds, err := credentials.NewClientTLSFromFile("ca.crt", "service.internal")
+if err != nil {
+	return err
+}
+foundation, err := kit.NewFoundation("myservice",
+	kit.WithGRPCAddr("127.0.0.1:8081"),
+	kit.WithGRPCServerOptions(grpc.Creds(serverCreds)),
+	kit.WithGatewayDialOptions(grpc.WithTransportCredentials(gatewayCreds)),
+)
+if err != nil {
+	return err
+}
+```
+
+For mutual TLS, use `credentials.NewTLS` with a `tls.Config`: set `ClientAuth` to
+`tls.RequireAndVerifyClientCert` and configure `ClientCAs` on the server; configure `Certificates`,
+`RootCAs`, and `ServerName` on the gateway client.
+
 ### Configuration
 The Foundation is configured with options, or environment variables (the options take precedence):
 
@@ -78,6 +107,7 @@ The Foundation is configured with options, or environment variables (the options
 |------------------------------------------|------------------------------|----------------|
 | `WithHTTPAddr`                           | `FOUNDATION_HTTP_ADDRESS`    | `0.0.0.0:8080` |
 | `WithGRPCAddr`                           | `FOUNDATION_GRPC_ADDRESS`    | `0.0.0.0:8081` |
+| `WithGatewayDialOptions`                 |                             | plaintext transport |
 | `WithMetricsAddr`                        | `FOUNDATION_METRICS_ADDRESS` | `:9090`        |
 | `WithProbesAddr`                         | `FOUNDATION_PROBES_ADDRESS`  | `:9091`        |
 | `WithShutdownTimeout`                    |                             | `15s`          |

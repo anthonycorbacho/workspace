@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"slices"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/log"
@@ -15,6 +16,7 @@ type options struct {
 	metricsAddr      string
 	probesAddr       string
 	grpcServerOpts   []grpc.ServerOption
+	gatewayDialOpts  []grpc.DialOption
 	cors             *cors.Options
 	httpWriteTimeout time.Duration
 	httpReadTimeout  time.Duration
@@ -26,9 +28,20 @@ type options struct {
 type Option func(*options)
 
 // WithGRPCServerOptions defines the gRPC server options.
+// Configure the gateway's client credentials with WithGatewayDialOptions when enabling TLS.
 func WithGRPCServerOptions(opts ...grpc.ServerOption) Option {
 	return func(o *options) {
 		o.grpcServerOpts = opts
+	}
+}
+
+// WithGatewayDialOptions sets the gRPC dial options used by the HTTP gateway to connect to WithGRPCAddr.
+// It replaces the default insecure credentials option: include grpc.WithTransportCredentials or
+// grpc.WithCredentialsBundle with credentials matching the gRPC server's configuration.
+func WithGatewayDialOptions(opts ...grpc.DialOption) Option {
+	opts = slices.Clone(opts)
+	return func(o *options) {
+		o.gatewayDialOpts = opts
 	}
 }
 

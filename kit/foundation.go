@@ -100,6 +100,7 @@ func NewFoundation(name string, optFns ...Option) (*Foundation, error) {
 	opts := &options{
 		httpAddr:         config.LookupEnv("FOUNDATION_HTTP_ADDRESS", "0.0.0.0:8080"),
 		grpcAddr:         config.LookupEnv("FOUNDATION_GRPC_ADDRESS", "0.0.0.0:8081"),
+		gatewayDialOpts:  []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
 		metricsAddr:      config.LookupEnv("FOUNDATION_METRICS_ADDRESS", ":9090"),
 		probesAddr:       config.LookupEnv("FOUNDATION_PROBES_ADDRESS", ":9091"),
 		httpWriteTimeout: 15 * time.Second,
@@ -183,13 +184,14 @@ func (f *Foundation) initHTTPServerOnce() {
 type RegisterServiceHandlerFunc func(gw *runtime.ServeMux, conn *grpc.ClientConn)
 
 // RegisterServiceHandler registers a grpc-gateway service handler.
+// The gateway's gRPC client is configured with WithGatewayDialOptions.
 func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOpts ...runtime.ServeMuxOption) {
 	// Make sure we have an HTTP server setup
 	f.initHTTPServerOnce()
 	// Only create one time the gateway and grpc client
 	f.gwOnce.Do(func() {
 		f.logger.Info(context.Background(), "initializing grpc-gateway")
-		conn, err := grpckit.NewClient(f.opts.grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpckit.NewClient(f.opts.grpcAddr, f.opts.gatewayDialOpts...)
 		if err != nil {
 			// reported by Serve, registering handlers with a nil connection would fail on every request.
 			f.gwErr = errors.Wrap(err, "creating grpc client for grpc-gateway")

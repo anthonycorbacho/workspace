@@ -471,6 +471,16 @@ func TestServeErrors(t *testing.T) {
 			wantErr: "creating grpc client for grpc-gateway",
 		},
 		{
+			name:    "invalid grpc gateway credentials",
+			options: []Option{WithGatewayDialOptions(grpc.WithTransportCredentials(nil))},
+			setup: func(f *Foundation) {
+				f.RegisterServiceHandler(func(*runtime.ServeMux, *grpc.ClientConn) {
+					t.Error("handler must not be registered without a grpc client")
+				})
+			},
+			wantErr: "no transport security set",
+		},
+		{
 			name: "http address in use",
 			setup: func(f *Foundation) {
 				f.RegisterHTTPHandler("/ping", func(http.ResponseWriter, *http.Request) {})
