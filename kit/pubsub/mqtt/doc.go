@@ -4,6 +4,11 @@
 // user properties, with the QoS 1 by default (see pubsub.WithQoS and pubsub.WithRetain).
 // MQTT has no negative acknowledgement: a message the handler failed to process is not redelivered.
 //
+// The client reconnects automatically and restores successful Subscriber subscriptions, including
+// wildcard filters, with their original QoS and retained-message settings. Failed restoration attempts
+// are retried with WithRetry's delay until the client is disconnected. The original subscribe context
+// only bounds registration; canceling it does not stop delivery or subscription restoration.
+//
 // Example:
 //
 //	client, err := mqtt.NewClient(ctx, "mqtt://localhost:1883", "my-service-1")

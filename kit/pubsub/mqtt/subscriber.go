@@ -12,6 +12,7 @@ import (
 var _ pubsub.Subscriber = (*Subscriber)(nil)
 
 // Subscriber subscribes to MQTT topics, the messages are received until Close.
+// Successful subscriptions are restored automatically after the client reconnects.
 type Subscriber struct {
 	closed    bool
 	closeLock sync.RWMutex
@@ -88,16 +89,11 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 			tracing.RecordError(span, err)
 		}
 	})
-	_, err := s.client.Subscribe(ctx, &paho.Subscribe{
-		Subscriptions: []paho.SubscribeOptions{
-			{
-				Topic:          subscription,
-				QoS:            2,
-				RetainHandling: 2,
-			},
-		},
+	return s.client.subscribe(ctx, paho.SubscribeOptions{
+		Topic:          subscription,
+		QoS:            2,
+		RetainHandling: 2,
 	})
-	return err
 }
 
 // markClosed marks the subscriber as closed, it reports false if it was already closed
