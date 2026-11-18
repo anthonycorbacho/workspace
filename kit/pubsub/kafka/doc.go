@@ -6,6 +6,11 @@
 // after the retry backoff. With a dead letter topic, the records failing too many deliveries are
 // published to it so they don't block their partition.
 //
+// Handler contexts keep the values of the context passed to Subscribe or SubscribeWithAck,
+// independently of its cancellation or deadline. Close cancels handler contexts, waits for the
+// running handler and poller to exit, then closes the Kafka client. Handlers must return after
+// cancellation, and Close must be called from outside a handler.
+//
 // Example:
 //
 //	client, err := kafka.NewClient([]string{"localhost:9092"},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"testing"
+	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
@@ -205,7 +206,8 @@ func TestSubscriptionContext(t *testing.T) {
 	defer s.Close()
 
 	type key struct{}
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), key{}, "value"))
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), key{}, "value"), time.Hour)
+	defer cancel()
 	noop := func(context.Context, pubsub.Message, map[string]string, func(), func(error)) error { return nil }
 	require.NoError(t, s.SubscribeWithAck(ctx, "orders", noop))
 	cancel()
@@ -214,4 +216,14 @@ func TestSubscriptionContext(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "value", sub.ctx.Value(key{}), "the records are handled with the subscription context values")
 	assert.NoError(t, sub.ctx.Err(), "the subscription lasts until Close")
+	assert.NoError(t, context.Cause(sub.ctx), "the caller's cancellation is not the subscription's cancellation")
+	_, hasDeadline := sub.ctx.Deadline()
+	assert.False(t, hasDeadline, "the caller's deadline does not limit the subscription")
+	child, stop := context.WithCancel(sub.ctx)
+	defer stop()
+
+	require.NoError(t, s.Close())
+	assert.ErrorIs(t, sub.ctx.Err(), context.Canceled)
+	assert.ErrorIs(t, context.Cause(sub.ctx), context.Canceled)
+	assert.ErrorIs(t, child.Err(), context.Canceled, "derived contexts follow shutdown too")
 }

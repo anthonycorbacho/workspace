@@ -21,9 +21,23 @@ var _ pubsub.Subscriber = (*Subscriber)(nil)
 // subscription is the handler of a subscription and the context of the records it handles.
 type subscription struct {
 	// ctx holds the values of the context given to SubscribeWithAck, not its cancellation:
-	// the subscription lasts until the subscriber is closed.
+	// it is canceled when the subscriber is closed.
 	ctx     context.Context
 	handler pubsub.HandlerWithAck
+}
+
+// subscriptionContext keeps the registration's values and follows the subscriber's lifetime.
+type subscriptionContext struct {
+	context.Context
+	values context.Context
+}
+
+func (c subscriptionContext) Value(key any) any {
+	// Resolve lifecycle values first so context.Cause and derived contexts follow its cancellation.
+	if value := c.Context.Value(key); value != nil {
+		return value
+	}
+	return c.values.Value(key)
 }
 
 // regexHandler is a subscription to the topics matching a regex.
@@ -34,11 +48,13 @@ type regexHandler struct {
 
 // Subscriber consumes Kafka topics, the records are polled in the background until Close.
 type Subscriber struct {
-	closed    bool
-	closeLock sync.RWMutex
-	client    *Client
-	ctx       context.Context
-	cancel    context.CancelFunc
+	closed     bool
+	closeLock  sync.RWMutex
+	client     *Client
+	ctx        context.Context
+	cancel     context.CancelFunc
+	pollerDone chan struct{}
+	closeDone  chan struct{}
 
 	muHandlerByTopic sync.RWMutex
 	handlerByTopic   map[string]subscription
@@ -56,29 +72,38 @@ func NewSubscriber(client *Client) (*Subscriber, error) {
 	if client == nil {
 		return nil, pubsub.ErrNilClient
 	}
+	return newSubscriber(client, client.client.PollFetches), nil
+}
 
+func newSubscriber(client *Client, poll func(context.Context) kgo.Fetches) *Subscriber {
 	// the poller lasts until Close, there is no caller context to derive it from.
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Subscriber{
 		client:         client,
 		ctx:            ctx,
 		cancel:         cancel,
+		pollerDone:     make(chan struct{}),
+		closeDone:      make(chan struct{}),
 		handlerByTopic: make(map[string]subscription),
 		handlerByRegex: make(map[string]regexHandler),
 		rewinds:        newRewinder(),
 	}
-	go s.poller()
+	go s.poller(poll)
 
-	return s, nil
+	return s
 }
 
-// Close stops polling the records and closes the client.
+// Close cancels polling and handler contexts, waits for the poller and any running handler,
+// then closes the client. Concurrent calls wait for the same shutdown to finish.
+// Handlers must return after cancellation; call Close from outside a handler.
 func (s *Subscriber) Close() error {
-	if !s.markClosed() {
-		return nil
+	if s.markClosed() {
+		s.cancel()
+		<-s.pollerDone
+		s.client.Close()
+		close(s.closeDone)
 	}
-	s.cancel()
-	s.client.Close()
+	<-s.closeDone
 	return nil
 }
 
@@ -103,9 +128,13 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string, handler
 // partition is assigned to another consumer.
 //
 // The context of the handled records holds the values of ctx (eg: logger fields, baggage) but the
-// subscription is not canceled with ctx, it lasts until the subscriber is closed.
+// subscription is not canceled with ctx, it lasts until the subscriber is closed. Close cancels
+// the handler contexts and waits for the running handler to return.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, handler pubsub.HandlerWithAck) error {
-	if s.isClosed() {
+	// Finish registration before Close can stop the poller and release the client.
+	s.closeLock.RLock()
+	defer s.closeLock.RUnlock()
+	if s.closed {
 		return pubsub.ErrSubscriberClosed
 	}
 
@@ -113,7 +142,7 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 		return pubsub.ErrNilTopic
 	}
 
-	sub := newSubscription(ctx, handler)
+	sub := s.newSubscription(ctx, handler)
 	if s.client.regexEnabled {
 		if err := s.registerHandlerByRegex(subscription, sub); err != nil {
 			return err
@@ -126,41 +155,49 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 	return nil
 }
 
-func (s *Subscriber) poller() {
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		default:
-			if s.client.regexEnabled && s.regexHandlerCount() < len(s.client.regexPatterns) {
-				// Wait for all handlers to be registered
-				time.Sleep(time.Second)
-				continue
+func (s *Subscriber) poller(poll func(context.Context) kgo.Fetches) {
+	defer close(s.pollerDone)
+	for s.ctx.Err() == nil {
+		if s.client.regexEnabled && s.regexHandlerCount() < len(s.client.regexPatterns) {
+			// Wait for all handlers to be registered, or for shutdown.
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(time.Second):
 			}
+			continue
+		}
 
-			fetches := s.client.client.PollFetches(s.ctx)
-			if fetches.IsClientClosed() {
+		fetches := poll(s.ctx)
+		if fetches.IsClientClosed() || s.ctx.Err() != nil {
+			return
+		}
+
+		// Log partition errors but continue processing
+		fetches.EachError(func(topic string, partition int32, err error) {
+			_, span := tracer.Start(s.ctx, "subscription error "+topic, trace.WithAttributes(
+				semconv.MessagingSystemKafka,
+				semconv.MessagingDestinationName(topic),
+				semconv.MessagingDestinationPartitionID(strconv.Itoa(int(partition))),
+			))
+			tracing.RecordError(span, err)
+			span.End()
+		})
+
+		for records := fetches.RecordIter(); !records.Done(); {
+			if s.ctx.Err() != nil {
 				return
 			}
-
-			// Log partition errors but continue processing
-			fetches.EachError(func(topic string, partition int32, err error) {
-				_, span := tracer.Start(s.ctx, "subscription error "+topic, trace.WithAttributes(
-					semconv.MessagingSystemKafka,
-					semconv.MessagingDestinationName(topic),
-					semconv.MessagingDestinationPartitionID(strconv.Itoa(int(partition))),
-				))
-				tracing.RecordError(span, err)
-				span.End()
-			})
-
-			fetches.EachRecord(s.handleRecord)
-
-			// set between the polls, it discards the records buffered after the rewound offsets.
-			offsets := s.rewinds.rewind()
-			s.client.client.SetOffsets(offsets)
-			s.pauseRewound(offsets)
+			s.handleRecord(records.Next())
 		}
+		if s.ctx.Err() != nil {
+			return
+		}
+
+		// set between the polls, it discards the records buffered after the rewound offsets.
+		offsets := s.rewinds.rewind()
+		s.client.client.SetOffsets(offsets)
+		s.pauseRewound(offsets)
 	}
 }
 
@@ -260,9 +297,12 @@ func (s *Subscriber) pauseRewound(offsets map[string]map[int32]kgo.EpochOffset) 
 	}
 }
 
-// newSubscription returns the subscription of handler, the records are handled with the values of ctx.
-func newSubscription(ctx context.Context, handler pubsub.HandlerWithAck) subscription {
-	return subscription{ctx: context.WithoutCancel(ctx), handler: handler}
+// newSubscription keeps ctx's values while tying record processing to the subscriber's lifetime.
+func (s *Subscriber) newSubscription(ctx context.Context, handler pubsub.HandlerWithAck) subscription {
+	return subscription{
+		ctx:     subscriptionContext{Context: s.ctx, values: context.WithoutCancel(ctx)},
+		handler: handler,
+	}
 }
 
 func (s *Subscriber) registerHandlerByTopic(topic string, sub subscription) {
@@ -361,8 +401,8 @@ func (s *Subscriber) markClosed() bool {
 }
 
 func (s *Subscriber) isClosed() bool {
-	s.closeLock.Lock()
-	defer s.closeLock.Unlock()
+	s.closeLock.RLock()
+	defer s.closeLock.RUnlock()
 
 	return s.closed
 }
