@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	pb "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
@@ -32,6 +34,13 @@ type panicHealthServer struct {
 }
 
 func (panicHealthServer) Check(context.Context, *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	panic("boom")
+}
+
+func (panicHealthServer) Watch(_ *healthpb.HealthCheckRequest, stream grpc.ServerStreamingServer[healthpb.HealthCheckResponse]) error {
+	if err := stream.Send(&healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}); err != nil {
+		return err
+	}
 	panic("boom")
 }
 
@@ -85,13 +94,76 @@ func TestServerAndClient(t *testing.T) {
 	assert.True(t, names["grpc_client_handled_total"])
 }
 
-func TestServerRecoverFromPanic(t *testing.T) {
-	cc := startServer(t, func(srv *grpc.Server) {
-		healthpb.RegisterHealthServer(srv, panicHealthServer{})
-	})
+func serverMetric(t *testing.T, name string, labels prometheus.Labels) *dto.Metric {
+	t.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			values := prometheus.Labels{}
+			for _, label := range metric.GetLabel() {
+				values[label.GetName()] = label.GetValue()
+			}
+			if maps.Equal(labels, values) {
+				return metric
+			}
+		}
+	}
+	t.Fatalf("metric %s with labels %v not found", name, labels)
+	return nil
+}
 
-	_, err := healthpb.NewHealthClient(cc).Check(context.Background(), &healthpb.HealthCheckRequest{})
-	assert.Equal(t, codes.Internal, status.Code(err))
+func TestServerRecoverFromPanic(t *testing.T) {
+	for _, tt := range []struct {
+		method  string
+		rpcType string
+	}{
+		{method: "Check", rpcType: "unary"},
+		{method: "Watch", rpcType: "server_stream"},
+	} {
+		t.Run(tt.method, func(t *testing.T) {
+			cc := startServerWithLogger(t, log.NewNop(), func(srv *grpc.Server) {
+				healthpb.RegisterHealthServer(srv, panicHealthServer{})
+			})
+			labels := prometheus.Labels{
+				"grpc_service": "grpc.health.v1.Health",
+				"grpc_method":  tt.method,
+				"grpc_type":    tt.rpcType,
+			}
+			errorLabels := maps.Clone(labels)
+			errorLabels["grpc_code"] = codes.Internal.String()
+			// Metrics are shared across servers: compare each RPC's increments rather than absolute totals.
+			started := serverMetric(t, "grpc_server_started_total", labels).GetCounter().GetValue()
+			handled := serverMetric(t, "grpc_server_handled_total", errorLabels).GetCounter().GetValue()
+			observed := serverMetric(t, "grpc_server_handling_seconds", labels).GetHistogram().GetSampleCount()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			client := healthpb.NewHealthClient(cc)
+			var err error
+			if tt.method == "Check" {
+				_, err = client.Check(ctx, &healthpb.HealthCheckRequest{})
+			} else {
+				stream, streamErr := client.Watch(ctx, &healthpb.HealthCheckRequest{})
+				require.NoError(t, streamErr)
+				resp, recvErr := stream.Recv()
+				require.NoError(t, recvErr)
+				assert.Equal(t, healthpb.HealthCheckResponse_SERVING, resp.GetStatus())
+				_, err = stream.Recv()
+			}
+			require.Error(t, err)
+			assert.Equal(t, codes.Internal, status.Code(err))
+			assert.NotContains(t, err.Error(), "boom", "the panic value must not reach the client")
+			assert.Equal(t, started+1, serverMetric(t, "grpc_server_started_total", labels).GetCounter().GetValue())
+			assert.Equal(t, handled+1, serverMetric(t, "grpc_server_handled_total", errorLabels).GetCounter().GetValue(),
+				"a recovered panic is counted as one completed Internal RPC")
+			assert.Equal(t, observed+1, serverMetric(t, "grpc_server_handling_seconds", labels).GetHistogram().GetSampleCount(),
+				"a recovered panic records one latency observation")
+		})
+	}
 }
 
 // syncBuffer is a concurrent safe buffer used as log output.

@@ -54,28 +54,26 @@ func otelgrpcOptions() []otelgrpc.Option {
 // the invalid requests are rejected with an InvalidRequest error listing the violations.
 //
 // The server errors and the recovered panics are logged with l, the global logger is used if l is nil.
+// Recovered panics return Internal and are included in the request completion and latency metrics.
 func NewServer(l *log.Logger, opts ...grpc.ServerOption) *grpc.Server {
 	if l == nil {
 		l = log.L()
 	}
-	// Create a default server opts and set our default chain of interceptor
-	// if user decide to pass a custom interceptor via `grpc.ChainXXXInterceptor` or grpc.XXXInterceptor,
-	// it should be added at the end of the call chain since
-	// interpreter call chain is from left to right.
-	// The error interceptor is after the metrics one, so the metrics record the status sent to the client.
+	// Interceptors run left to right; custom chained interceptors are appended to the defaults.
+	// Metrics wrap recovery and error conversion so panics also record completion with the client-facing status.
 	srvMetrics, _ := metrics()
 	recovery := grpcrecovery.WithRecoveryHandlerContext(recoverFrom(l))
 	serverOpts := []grpc.ServerOption{
 		grpc.StatsHandler(otelgrpc.NewServerHandler(otelgrpcOptions()...)),
 		grpc.ChainStreamInterceptor(
-			grpcrecovery.StreamServerInterceptor(recovery),
 			srvMetrics.StreamServerInterceptor(),
+			grpcrecovery.StreamServerInterceptor(recovery),
 			streamServerErrorInterceptor(l),
 			streamServerValidatorInterceptor(),
 		),
 		grpc.ChainUnaryInterceptor(
-			grpcrecovery.UnaryServerInterceptor(recovery),
 			srvMetrics.UnaryServerInterceptor(),
+			grpcrecovery.UnaryServerInterceptor(recovery),
 			unaryServerErrorInterceptor(l),
 			unaryServerValidatorInterceptor(),
 		),
