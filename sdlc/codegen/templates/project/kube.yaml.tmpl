@@ -55,6 +55,8 @@ spec:
           imagePullPolicy: IfNotPresent
           name: {{ .Project }}
           env:
+            - name: FOUNDATION_SHUTDOWN_DELAY
+              value: "5s"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://alloy.monitoring.svc.cluster.local:4317
             - name: POD_NAME

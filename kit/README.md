@@ -70,6 +70,13 @@ if gatewayErr != nil {
 
 The requests are validated with their protovalidate rules, and the handlers return coded errors
 (see [errors](errors) and [application-error.md](../sdlc/documentation/application-error.md)).
+Both custom HTTP routes (`RegisterHTTPHandler`) and grpc-gateway handlers are wrapped with panic recovery
+that logs the panic with trace correlation and returns a `500` `ERR_00000` JSON response with `trace_id`.
+
+### Health probes
+Custom liveness (`/healthz`) and readiness (`/readyz`) checks can be registered with
+`RegisterLivenessCheck` and `RegisterReadinessCheck` (receiving the request `context.Context` so
+dependency pings respect probe timeouts).
 
 ### gRPC TLS
 The gateway connects to the gRPC address using its own client. Configure both the server and gateway

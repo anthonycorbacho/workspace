@@ -35,7 +35,9 @@ Another benefit of namespacing the applications is that you will be able to also
 
 ```bash
 workspace/
+├── .agents                       # Agent skills (.agents/skills)
 ├── .github                       # GitHub folder that contain workflow, codeowners and templates
+├── AGENTS.md                     # Repository conventions and commands for AI agents
 ├── README.md
 ├── Tiltfile                      # Configuration for running a local env
 ├── go.mod
