@@ -30,11 +30,13 @@ func New(opt *redis.Options) (*Cache, error) {
 
 	// Enable tracing instrumentation.
 	if err := redisotel.InstrumentTracing(rdb); err != nil {
+		_ = rdb.Close() //nolint:errcheck // the instrumentation error is more relevant.
 		return nil, errors.Wrap(err, "redis tracing")
 	}
 
 	// Enable metrics instrumentation.
 	if err := redisotel.InstrumentMetrics(rdb); err != nil {
+		_ = rdb.Close() //nolint:errcheck // the instrumentation error is more relevant.
 		return nil, errors.Wrap(err, "redis metrics")
 	}
 
@@ -79,12 +81,12 @@ func (c *Cache) MultiGet(ctx context.Context, keys []string, value any) error {
 
 	// Making sure that we are getting the correct interface
 	// we are expecting to get a &[]myType
-	typeOf := reflect.TypeOf(value)
-	if typeOf.Kind() != reflect.Pointer {
-		return errors.New("value should be a pointer")
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return errors.New("value should be a non-nil pointer")
 	}
 
-	valueOf := reflect.ValueOf(value).Elem()
+	valueOf := rv.Elem()
 	if valueOf.Kind() != reflect.Slice {
 		return errors.New("value should be a pointer of slice")
 	}
@@ -94,23 +96,22 @@ func (c *Cache) MultiGet(ctx context.Context, keys []string, value any) error {
 		return errors.Wrapf(err, "redis MGet error, keys is %+v", keys)
 	}
 
-	// If not results found
-	// We exist and the slice will be empty.
+	// If no results found, exit and the slice will remain unchanged.
 	if len(results) == 0 {
 		return nil
 	}
 
 	// type represent the type of the slice
-	typ := reflect.TypeOf(value).Elem().Elem()
+	typ := valueOf.Type().Elem()
 	for _, result := range results {
-		if result == nil {
+		raw, ok := resultBytes(result)
+		if !ok {
 			continue
 		}
 
 		// creating a new value of the slice type
 		object := reflect.New(typ).Interface()
-		err = cache.Unmarshal([]byte(result.(string)), object)
-		if err != nil {
+		if err := cache.Unmarshal(raw, object); err != nil {
 			continue
 		}
 		// Adding to the slice the value.
@@ -118,6 +119,17 @@ func (c *Cache) MultiGet(ctx context.Context, keys []string, value any) error {
 	}
 
 	return nil
+}
+
+func resultBytes(result any) ([]byte, bool) {
+	switch v := result.(type) {
+	case string:
+		return []byte(v), true
+	case []byte:
+		return v, true
+	default:
+		return nil, false
+	}
 }
 
 // Set implements cache.Cache.

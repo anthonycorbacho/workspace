@@ -57,6 +57,9 @@ spec:
           env:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: http://alloy.monitoring.svc.cluster.local:4317
+            # Give kube-proxy/EndpointSlice time to stop routing after /readyz turns 503 on SIGTERM.
+            - name: FOUNDATION_SHUTDOWN_DELAY
+              value: "5s"
             - name: POD_NAME
               valueFrom:
                 fieldRef:

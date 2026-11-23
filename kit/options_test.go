@@ -44,16 +44,61 @@ func TestNewFoundation(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "negative shutdown delay",
+			fname:   "test",
+			options: []Option{WithShutdownDelay(-time.Second)},
+			wantErr: true,
+		},
+		{
+			name:    "invalid shutdown delay env",
+			fname:   "test",
+			env:     map[string]string{"FOUNDATION_SHUTDOWN_DELAY": "not-a-duration"},
+			wantErr: true,
+		},
+		{
+			name:    "negative http read timeout",
+			fname:   "test",
+			options: []Option{WithHTTPReadTimeout(-time.Second)},
+			wantErr: true,
+		},
+		{
+			name:    "negative http write timeout",
+			fname:   "test",
+			options: []Option{WithHTTPWriteTimeout(-time.Second)},
+			wantErr: true,
+		},
+		{
+			name:    "negative http read header timeout",
+			fname:   "test",
+			options: []Option{WithHTTPReadHeaderTimeout(-time.Second)},
+			wantErr: true,
+		},
+		{
+			name:    "negative http idle timeout",
+			fname:   "test",
+			options: []Option{WithHTTPIdleTimeout(-time.Second)},
+			wantErr: true,
+		},
+		{
+			name:    "negative http max header bytes",
+			fname:   "test",
+			options: []Option{WithHTTPMaxHeaderBytes(-1)},
+			wantErr: true,
+		},
+		{
 			name:  "defaults",
 			fname: "test",
 			want: options{
-				httpAddr:         "0.0.0.0:8080",
-				grpcAddr:         "0.0.0.0:8081",
-				metricsAddr:      ":9090",
-				probesAddr:       ":9091",
-				httpWriteTimeout: 15 * time.Second,
-				httpReadTimeout:  15 * time.Second,
-				shutdownTimeout:  15 * time.Second,
+				httpAddr:              "0.0.0.0:8080",
+				grpcAddr:              "0.0.0.0:8081",
+				metricsAddr:           ":9090",
+				probesAddr:            ":9091",
+				httpWriteTimeout:      15 * time.Second,
+				httpReadTimeout:       15 * time.Second,
+				httpReadHeaderTimeout: 5 * time.Second,
+				httpIdleTimeout:       60 * time.Second,
+				httpMaxHeaderBytes:    1 << 20,
+				shutdownTimeout:       15 * time.Second,
 			},
 		},
 		{
@@ -64,15 +109,20 @@ func TestNewFoundation(t *testing.T) {
 				"FOUNDATION_GRPC_ADDRESS":    "127.0.0.1:1002",
 				"FOUNDATION_METRICS_ADDRESS": "127.0.0.1:1003",
 				"FOUNDATION_PROBES_ADDRESS":  "127.0.0.1:1004",
+				"FOUNDATION_SHUTDOWN_DELAY":  "5s",
 			},
 			want: options{
-				httpAddr:         "127.0.0.1:1001",
-				grpcAddr:         "127.0.0.1:1002",
-				metricsAddr:      "127.0.0.1:1003",
-				probesAddr:       "127.0.0.1:1004",
-				httpWriteTimeout: 15 * time.Second,
-				httpReadTimeout:  15 * time.Second,
-				shutdownTimeout:  15 * time.Second,
+				httpAddr:              "127.0.0.1:1001",
+				grpcAddr:              "127.0.0.1:1002",
+				metricsAddr:           "127.0.0.1:1003",
+				probesAddr:            "127.0.0.1:1004",
+				httpWriteTimeout:      15 * time.Second,
+				httpReadTimeout:       15 * time.Second,
+				httpReadHeaderTimeout: 5 * time.Second,
+				httpIdleTimeout:       60 * time.Second,
+				httpMaxHeaderBytes:    1 << 20,
+				shutdownTimeout:       15 * time.Second,
+				shutdownDelay:         5 * time.Second,
 			},
 		},
 		{
@@ -83,24 +133,33 @@ func TestNewFoundation(t *testing.T) {
 				"FOUNDATION_GRPC_ADDRESS":    "127.0.0.1:1002",
 				"FOUNDATION_METRICS_ADDRESS": "127.0.0.1:1003",
 				"FOUNDATION_PROBES_ADDRESS":  "127.0.0.1:1004",
+				"FOUNDATION_SHUTDOWN_DELAY":  "5s",
 			},
 			options: []Option{
 				WithHTTPAddr("127.0.0.1:2001"),
 				WithGRPCAddr("127.0.0.1:2002"),
 				WithMetricsAddr("127.0.0.1:2003"),
 				WithProbesAddr("127.0.0.1:2004"),
-				WithHTTPWriteTimeout(time.Second),
+				WithHTTPWriteTimeout(0),
 				WithHTTPReadTimeout(2 * time.Second),
+				WithHTTPReadHeaderTimeout(time.Second),
+				WithHTTPIdleTimeout(30 * time.Second),
+				WithHTTPMaxHeaderBytes(64 << 10),
 				WithShutdownTimeout(3 * time.Second),
+				WithShutdownDelay(2 * time.Second),
 			},
 			want: options{
-				httpAddr:         "127.0.0.1:2001",
-				grpcAddr:         "127.0.0.1:2002",
-				metricsAddr:      "127.0.0.1:2003",
-				probesAddr:       "127.0.0.1:2004",
-				httpWriteTimeout: time.Second,
-				httpReadTimeout:  2 * time.Second,
-				shutdownTimeout:  3 * time.Second,
+				httpAddr:              "127.0.0.1:2001",
+				grpcAddr:              "127.0.0.1:2002",
+				metricsAddr:           "127.0.0.1:2003",
+				probesAddr:            "127.0.0.1:2004",
+				httpWriteTimeout:      0,
+				httpReadTimeout:       2 * time.Second,
+				httpReadHeaderTimeout: time.Second,
+				httpIdleTimeout:       30 * time.Second,
+				httpMaxHeaderBytes:    64 << 10,
+				shutdownTimeout:       3 * time.Second,
+				shutdownDelay:         2 * time.Second,
 			},
 		},
 		{
@@ -112,15 +171,18 @@ func TestNewFoundation(t *testing.T) {
 				WithGRPCServerOptions(grpc.MaxRecvMsgSize(1024), grpc.MaxSendMsgSize(1024)),
 			},
 			want: options{
-				httpAddr:         "0.0.0.0:8080",
-				grpcAddr:         "0.0.0.0:8081",
-				metricsAddr:      ":9090",
-				probesAddr:       ":9091",
-				httpWriteTimeout: 15 * time.Second,
-				httpReadTimeout:  15 * time.Second,
-				shutdownTimeout:  15 * time.Second,
-				cors:             &cors.Options{AllowedOrigins: []string{"https://example.com"}},
-				logger:           logger,
+				httpAddr:              "0.0.0.0:8080",
+				grpcAddr:              "0.0.0.0:8081",
+				metricsAddr:           ":9090",
+				probesAddr:            ":9091",
+				httpWriteTimeout:      15 * time.Second,
+				httpReadTimeout:       15 * time.Second,
+				httpReadHeaderTimeout: 5 * time.Second,
+				httpIdleTimeout:       60 * time.Second,
+				httpMaxHeaderBytes:    1 << 20,
+				shutdownTimeout:       15 * time.Second,
+				cors:                  &cors.Options{AllowedOrigins: []string{"https://example.com"}},
+				logger:                logger,
 			},
 			wantGrpcOpts: 2,
 		},
@@ -144,7 +206,11 @@ func TestNewFoundation(t *testing.T) {
 			assert.Equal(t, tt.want.probesAddr, f.opts.probesAddr)
 			assert.Equal(t, tt.want.httpWriteTimeout, f.opts.httpWriteTimeout)
 			assert.Equal(t, tt.want.httpReadTimeout, f.opts.httpReadTimeout)
+			assert.Equal(t, tt.want.httpReadHeaderTimeout, f.opts.httpReadHeaderTimeout)
+			assert.Equal(t, tt.want.httpIdleTimeout, f.opts.httpIdleTimeout)
+			assert.Equal(t, tt.want.httpMaxHeaderBytes, f.opts.httpMaxHeaderBytes)
 			assert.Equal(t, tt.want.shutdownTimeout, f.opts.shutdownTimeout)
+			assert.Equal(t, tt.want.shutdownDelay, f.opts.shutdownDelay)
 			assert.Equal(t, tt.want.cors, f.opts.cors)
 			assert.Len(t, f.opts.grpcServerOpts, tt.wantGrpcOpts)
 			require.NotNil(t, f.logger, "a logger is always set")
@@ -157,28 +223,40 @@ func TestNewFoundation(t *testing.T) {
 
 func TestHTTPServerTimeouts(t *testing.T) {
 	tests := []struct {
-		name         string
-		options      []Option
-		wantRead     time.Duration
-		wantWrite    time.Duration
-		wantHTTPAddr string
+		name               string
+		options            []Option
+		wantRead           time.Duration
+		wantWrite          time.Duration
+		wantReadHeader     time.Duration
+		wantIdle           time.Duration
+		wantMaxHeaderBytes int
+		wantHTTPAddr       string
 	}{
 		{
-			name:         "defaults",
-			wantRead:     15 * time.Second,
-			wantWrite:    15 * time.Second,
-			wantHTTPAddr: "0.0.0.0:8080",
+			name:               "defaults",
+			wantRead:           15 * time.Second,
+			wantWrite:          15 * time.Second,
+			wantReadHeader:     5 * time.Second,
+			wantIdle:           60 * time.Second,
+			wantMaxHeaderBytes: 1 << 20,
+			wantHTTPAddr:       "0.0.0.0:8080",
 		},
 		{
 			name: "custom",
 			options: []Option{
 				WithHTTPReadTimeout(3 * time.Second),
 				WithHTTPWriteTimeout(4 * time.Second),
+				WithHTTPReadHeaderTimeout(2 * time.Second),
+				WithHTTPIdleTimeout(30 * time.Second),
+				WithHTTPMaxHeaderBytes(64 << 10),
 				WithHTTPAddr("127.0.0.1:1234"),
 			},
-			wantRead:     3 * time.Second,
-			wantWrite:    4 * time.Second,
-			wantHTTPAddr: "127.0.0.1:1234",
+			wantRead:           3 * time.Second,
+			wantWrite:          4 * time.Second,
+			wantReadHeader:     2 * time.Second,
+			wantIdle:           30 * time.Second,
+			wantMaxHeaderBytes: 64 << 10,
+			wantHTTPAddr:       "127.0.0.1:1234",
 		},
 	}
 	for _, tt := range tests {
@@ -189,6 +267,9 @@ func TestHTTPServerTimeouts(t *testing.T) {
 			require.NotNil(t, f.httpServer)
 			assert.Equal(t, tt.wantRead, f.httpServer.ReadTimeout)
 			assert.Equal(t, tt.wantWrite, f.httpServer.WriteTimeout)
+			assert.Equal(t, tt.wantReadHeader, f.httpServer.ReadHeaderTimeout)
+			assert.Equal(t, tt.wantIdle, f.httpServer.IdleTimeout)
+			assert.Equal(t, tt.wantMaxHeaderBytes, f.httpServer.MaxHeaderBytes)
 			assert.Equal(t, tt.wantHTTPAddr, f.httpServer.Addr)
 		})
 	}

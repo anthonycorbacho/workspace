@@ -16,7 +16,7 @@ import (
 // Client is a MQTT v5 client, shared by a Publisher or a Subscriber, it reconnects automatically.
 type Client struct {
 	*autopaho.ConnectionManager
-	route paho.Router
+	routes subscriberRoutes
 
 	subscriptionsLock sync.Mutex
 	subscriptions     map[string]paho.SubscribeOptions
@@ -113,7 +113,7 @@ func NewClient(ctx context.Context, address string, clientID string, options ...
 	connCtx, cancelConn := context.WithCancel(context.WithoutCancel(ctx))
 	router := paho.NewStandardRouter()
 	client := &Client{
-		route:            router,
+		routes:           subscriberRoutes{router: router, topics: make(map[string]*topicHandlers)},
 		subscriptions:    make(map[string]paho.SubscribeOptions),
 		restoreRequested: make(chan struct{}, 1),
 		restoreDone:      make(chan struct{}),

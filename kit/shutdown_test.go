@@ -255,3 +255,108 @@ func TestShutdownForcesHTTPAndGRPC(t *testing.T) {
 	}()
 	assert.Error(t, awaitResult(t, streamDone), "the RPC is aborted after HTTP exhausts the grace period")
 }
+
+func TestShutdownDelay(t *testing.T) {
+	const delay = 150 * time.Millisecond
+	f, err := NewFoundation("shutdown-delay",
+		WithShutdownDelay(delay),
+		WithShutdownTimeout(2*time.Second),
+	)
+	require.NoError(t, err)
+	f.RegisterHTTPHandler("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "pong")
+	})
+	url, httpStopped := serveTestHTTP(t, f.httpServer)
+	probes := &http.Server{Handler: internalRouter(f.handleReadiness, f.livenessProbe)}
+	probesURL, probesStopped := serveTestHTTP(t, probes)
+
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	t.Cleanup(client.CloseIdleConnections)
+
+	started := time.Now()
+	shutdownDone := make(chan struct{})
+	go func() {
+		f.shutdown(probes)
+		close(shutdownDone)
+	}()
+
+	// Readiness flips to 503 immediately while the HTTP server keeps accepting requests during the delay.
+	require.Eventually(t, func() bool {
+		return getHTTPResult(client, probesURL+"/readyz").status == http.StatusServiceUnavailable
+	}, time.Second, 5*time.Millisecond)
+
+	ping := getHTTPResult(client, url+"/ping")
+	require.NoError(t, ping.err)
+	assert.Equal(t, http.StatusOK, ping.status)
+	assert.Equal(t, "pong", ping.body)
+
+	awaitResult(t, shutdownDone)
+	assert.GreaterOrEqual(t, time.Since(started), delay)
+	awaitResult(t, httpStopped)
+	awaitResult(t, probesStopped)
+}
+
+func TestShutdownHooks(t *testing.T) {
+	f, err := NewFoundation("shutdown-hooks", WithShutdownTimeout(2*time.Second))
+	require.NoError(t, err)
+
+	var (
+		mu    sync.Mutex
+		order []string
+	)
+	record := func(event string) {
+		mu.Lock()
+		order = append(order, event)
+		mu.Unlock()
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	f.RegisterHTTPHandler("/work", func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		record("http-done")
+		w.WriteHeader(http.StatusOK)
+	})
+	url, httpStopped := serveTestHTTP(t, f.httpServer)
+
+	// Nil hook must be ignored.
+	f.RegisterShutdown(nil)
+	f.RegisterShutdown(func(ctx context.Context) error {
+		assert.NotNil(t, ctx)
+		_, hasDeadline := ctx.Deadline()
+		assert.True(t, hasDeadline, "hook context carries the shutdown deadline")
+		record("hook-1")
+		return nil
+	})
+	f.RegisterShutdown(func(context.Context) error {
+		record("hook-2-err")
+		return assert.AnError
+	})
+	f.RegisterShutdown(func(context.Context) error {
+		record("hook-3")
+		return nil
+	})
+
+	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	t.Cleanup(client.CloseIdleConnections)
+	respCh := make(chan httpResult, 1)
+	go func() { respCh <- getHTTPResult(client, url+"/work") }()
+	awaitResult(t, entered)
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		f.shutdown()
+		close(shutdownDone)
+	}()
+	awaitResult(t, httpStopped)
+	close(release)
+
+	res := awaitResult(t, respCh)
+	require.NoError(t, res.err)
+	assert.Equal(t, http.StatusOK, res.status)
+	awaitResult(t, shutdownDone)
+
+	// Hooks must run after HTTP drains, in LIFO order, and an error must not skip remaining hooks.
+	assert.Equal(t, []string{"http-done", "hook-3", "hook-2-err", "hook-1"}, order)
+}

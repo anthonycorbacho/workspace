@@ -67,7 +67,7 @@ func NewNop() *Logger {
 // Close is flushing any buffered log entries.
 // Applications should take care to call Close before exiting.
 func (l *Logger) Close() {
-	if l.log == nil {
+	if l == nil || l.log == nil {
 		return
 	}
 
@@ -77,25 +77,25 @@ func (l *Logger) Close() {
 // Debug logs a message at DebugLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Debug(ctx context.Context, message string, fields ...Field) {
-	log(l.log.Debug, ctx, message, fields...)
+	l.write(zapcore.DebugLevel, ctx, message, fields...)
 }
 
 // Info logs a message at InfoLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Info(ctx context.Context, message string, fields ...Field) {
-	log(l.log.Info, ctx, message, fields...)
+	l.write(zapcore.InfoLevel, ctx, message, fields...)
 }
 
 // Warn logs a message at WarnLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Warn(ctx context.Context, message string, fields ...Field) {
-	log(l.log.Warn, ctx, message, fields...)
+	l.write(zapcore.WarnLevel, ctx, message, fields...)
 }
 
 // Error logs a message at ErrorLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Error(ctx context.Context, message string, fields ...Field) {
-	log(l.log.Error, ctx, message, fields...)
+	l.write(zapcore.ErrorLevel, ctx, message, fields...)
 }
 
 // Fatal logs a message at FatalLevel. The message includes any fields passed
@@ -104,28 +104,35 @@ func (l *Logger) Error(ctx context.Context, message string, fields ...Field) {
 // The logger then calls os.Exit(1), even if logging at FatalLevel is
 // disabled.
 func (l *Logger) Fatal(ctx context.Context, message string, fields ...Field) {
-	log(l.log.Fatal, ctx, message, fields...)
+	l.write(zapcore.FatalLevel, ctx, message, fields...)
 }
 
-func log(fn func(msg string, fields ...Field), ctx context.Context, msg string, fields ...Field) { //nolint
-	attributes := attributeFields(fields...)
-	span := trace.SpanFromContext(ctx)
-
-	// If trace information is not set (non trace context)
-	// we will not log traceid.
-	if !span.SpanContext().IsValid() {
-		fn(
-			msg,
-			attributeField(attributes),
-		)
+func (l *Logger) write(level zapcore.Level, ctx context.Context, msg string, fields ...Field) {
+	if l == nil || l.log == nil {
+		return
+	}
+	ce := l.log.Check(level, msg)
+	if ce == nil {
 		return
 	}
 
-	fn(
-		msg,
-		String("TraceId", span.SpanContext().TraceID().String()),
-		String("SpanId", span.SpanContext().SpanID().String()),
-		String("TraceFlags", span.SpanContext().TraceFlags().String()),
+	attributes := attributeFields(fields...)
+	var sc trace.SpanContext
+	if ctx != nil {
+		sc = trace.SpanFromContext(ctx).SpanContext()
+	}
+
+	// If trace information is not set (non trace context)
+	// we will not log traceid.
+	if !sc.IsValid() {
+		ce.Write(attributeField(attributes))
+		return
+	}
+
+	ce.Write(
+		String("TraceId", sc.TraceID().String()),
+		String("SpanId", sc.SpanID().String()),
+		String("TraceFlags", sc.TraceFlags().String()),
 		attributeField(attributes),
 	)
 }

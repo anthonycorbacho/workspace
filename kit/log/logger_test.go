@@ -394,3 +394,56 @@ func TestNewEmptyEnvLevel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, zapcore.InfoLevel, l.log.Level())
 }
+
+func TestLoggerNilSafety(t *testing.T) {
+	var nilLogger *Logger
+	zeroLogger := &Logger{}
+
+	for _, tt := range []struct {
+		name   string
+		logger *Logger
+	}{
+		{name: "nil receiver", logger: nilLogger},
+		{name: "zero value logger", logger: zeroLogger},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				tt.logger.Debug(context.Background(), "msg")
+				tt.logger.Info(context.Background(), "msg", String("k", "v"))
+				tt.logger.Warn(context.Background(), "msg")
+				tt.logger.Error(context.Background(), "msg")
+				tt.logger.Close()
+			})
+		})
+	}
+
+	t.Run("nil context", func(t *testing.T) {
+		l, out := newTestLogger(InfoLevel)
+		assert.NotPanics(t, func() {
+			l.Info(nil, "msg", String("k", "v")) //nolint:staticcheck // intentionally testing nil context safety.
+		})
+		entries := out.entries(t)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "msg", entries[0]["Body"])
+	})
+}
+
+func TestLoggerDisabledLevelNoAllocs(t *testing.T) {
+	l, _ := newTestLogger(InfoLevel)
+	ctx := context.Background()
+
+	allocs := testing.AllocsPerRun(100, func() {
+		l.Debug(ctx, "filtered", String("user", "bob"), Int("age", 42))
+	})
+	assert.Zero(t, allocs, "disabled log levels must not allocate attributes or inspect caller")
+}
+
+func BenchmarkLoggerDisabledDebug(b *testing.B) {
+	l, _ := newTestLogger(InfoLevel)
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		l.Debug(ctx, "filtered", String("user", "bob"), Int("age", 42))
+	}
+}

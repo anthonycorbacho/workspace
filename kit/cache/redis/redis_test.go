@@ -481,3 +481,57 @@ func TestUnreachableRedis(t *testing.T) {
 		})
 	}
 }
+
+func TestMultiGetValidation(t *testing.T) {
+	c := &Cache{}
+	ctx := context.Background()
+
+	var nilSlicePtr *[]string
+	var notSlice string
+
+	tests := []struct {
+		name    string
+		keys    []string
+		value   any
+		wantErr bool
+	}{
+		{name: "empty keys with nil value", keys: nil, value: nil, wantErr: false},
+		{name: "nil value", keys: []string{"k1"}, value: nil, wantErr: true},
+		{name: "typed nil pointer", keys: []string{"k1"}, value: nilSlicePtr, wantErr: true},
+		{name: "non-pointer slice", keys: []string{"k1"}, value: []string{}, wantErr: true},
+		{name: "pointer to non-slice", keys: []string{"k1"}, value: &notSlice, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.NotPanics(t, func() {
+				err := c.MultiGet(ctx, tt.keys, tt.value)
+				if tt.wantErr {
+					assert.Error(t, err)
+					return
+				}
+				assert.NoError(t, err)
+			})
+		})
+	}
+}
+
+func TestResultBytes(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     any
+		want   []byte
+		wantOK bool
+	}{
+		{name: "nil", in: nil, wantOK: false},
+		{name: "string", in: "hello", want: []byte("hello"), wantOK: true},
+		{name: "bytes", in: []byte("world"), want: []byte("world"), wantOK: true},
+		{name: "unexpected type", in: int64(42), wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := resultBytes(tt.in)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

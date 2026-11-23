@@ -1,6 +1,7 @@
 package kit
 
 import (
+	"net/http"
 	"slices"
 	"time"
 
@@ -11,17 +12,22 @@ import (
 
 // options are the configurable options of a Foundation.
 type options struct {
-	grpcAddr         string
-	httpAddr         string
-	metricsAddr      string
-	probesAddr       string
-	grpcServerOpts   []grpc.ServerOption
-	gatewayDialOpts  []grpc.DialOption
-	cors             *cors.Options
-	httpWriteTimeout time.Duration
-	httpReadTimeout  time.Duration
-	shutdownTimeout  time.Duration
-	logger           *log.Logger
+	grpcAddr              string
+	httpAddr              string
+	metricsAddr           string
+	probesAddr            string
+	grpcServerOpts        []grpc.ServerOption
+	gatewayDialOpts       []grpc.DialOption
+	gatewayAllowedHeaders map[string]struct{}
+	cors                  *cors.Options
+	httpWriteTimeout      time.Duration
+	httpReadTimeout       time.Duration
+	httpReadHeaderTimeout time.Duration
+	httpIdleTimeout       time.Duration
+	httpMaxHeaderBytes    int
+	shutdownTimeout       time.Duration
+	shutdownDelay         time.Duration
+	logger                *log.Logger
 }
 
 // Option defines a Foundation option.
@@ -30,6 +36,7 @@ type Option func(*options)
 // WithGRPCServerOptions defines the gRPC server options.
 // Configure the gateway's client credentials with WithGatewayDialOptions when enabling TLS.
 func WithGRPCServerOptions(opts ...grpc.ServerOption) Option {
+	opts = slices.Clone(opts)
 	return func(o *options) {
 		o.grpcServerOpts = opts
 	}
@@ -42,6 +49,23 @@ func WithGatewayDialOptions(opts ...grpc.DialOption) Option {
 	opts = slices.Clone(opts)
 	return func(o *options) {
 		o.gatewayDialOpts = opts
+	}
+}
+
+// WithGatewayAllowedHeaders restricts the extra HTTP headers forwarded as gRPC metadata by the
+// grpc-gateway to the given allowlist (in addition to runtime.DefaultHeaderMatcher).
+// Passing no headers disables forwarding of extra headers such as X-*.
+// When this option is not set, all X-* headers are forwarded by default.
+func WithGatewayAllowedHeaders(headers ...string) Option {
+	allowed := make(map[string]struct{}, len(headers))
+	for _, h := range headers {
+		if h == "" {
+			continue
+		}
+		allowed[http.CanonicalHeaderKey(h)] = struct{}{}
+	}
+	return func(o *options) {
+		o.gatewayAllowedHeaders = allowed
 	}
 }
 
@@ -67,6 +91,7 @@ func WithHTTPAddr(addr string) Option {
 }
 
 // WithHTTPWriteTimeout defines the write timeout of the HTTP server.
+// It defaults to 15 seconds. Set to 0 to disable the write timeout (eg: for SSE or streaming responses).
 func WithHTTPWriteTimeout(timeout time.Duration) Option {
 	return func(o *options) {
 		o.httpWriteTimeout = timeout
@@ -74,18 +99,54 @@ func WithHTTPWriteTimeout(timeout time.Duration) Option {
 }
 
 // WithHTTPReadTimeout defines the read timeout of the HTTP server.
+// It defaults to 15 seconds.
 func WithHTTPReadTimeout(timeout time.Duration) Option {
 	return func(o *options) {
 		o.httpReadTimeout = timeout
 	}
 }
 
-// WithShutdownTimeout sets the shared grace period for draining the HTTP, gRPC, probes and metrics servers.
-// It defaults to 15 seconds and must be positive. Remaining connections are forcibly closed when it expires.
+// WithHTTPReadHeaderTimeout defines the amount of time allowed to read HTTP request headers.
+// It defaults to 5 seconds.
+func WithHTTPReadHeaderTimeout(timeout time.Duration) Option {
+	return func(o *options) {
+		o.httpReadHeaderTimeout = timeout
+	}
+}
+
+// WithHTTPIdleTimeout defines the maximum amount of time to wait for the next request when keep-alives are enabled.
+// It defaults to 60 seconds.
+func WithHTTPIdleTimeout(timeout time.Duration) Option {
+	return func(o *options) {
+		o.httpIdleTimeout = timeout
+	}
+}
+
+// WithHTTPMaxHeaderBytes defines the maximum number of bytes the HTTP server will read parsing request headers.
+// It defaults to 1 MiB.
+func WithHTTPMaxHeaderBytes(maxBytes int) Option {
+	return func(o *options) {
+		o.httpMaxHeaderBytes = maxBytes
+	}
+}
+
+// WithShutdownTimeout sets the shared grace period for draining the HTTP, gRPC, probes and metrics servers
+// and running registered shutdown hooks. It defaults to 15 seconds and must be positive.
+// Remaining connections are forcibly closed when it expires.
 // The telemetry providers have separate flush timeouts.
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *options) {
 		o.shutdownTimeout = timeout
+	}
+}
+
+// WithShutdownDelay sets the pre-drain delay between marking /readyz unready and stopping the public
+// listeners on graceful shutdown (also configurable via FOUNDATION_SHUTDOWN_DELAY).
+// It defaults to 0. In Kubernetes, setting this (eg: 5s) allows EndpointSlice/kube-proxy propagation
+// to stop routing traffic to the pod before the servers close their listeners.
+func WithShutdownDelay(delay time.Duration) Option {
+	return func(o *options) {
+		o.shutdownDelay = delay
 	}
 }
 

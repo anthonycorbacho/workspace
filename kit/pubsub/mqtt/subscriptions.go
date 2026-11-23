@@ -12,13 +12,16 @@ import (
 const resubscribeTimeout = 5 * time.Second
 
 // subscribe remembers successful subscriptions for the next connection, independently of ctx.
-func (c *Client) subscribe(ctx context.Context, subscription paho.SubscribeOptions) error {
+func (c *Client) subscribe(ctx context.Context, subscription paho.SubscribeOptions, handler paho.MessageHandler) error {
+	// The broker may publish before SUBACK, so the handler must already be routable.
+	rollback := c.routes.register(subscription.Topic, handler)
 	c.subscriptionsLock.Lock()
 	generation := c.generation
 	c.subscriptionsLock.Unlock()
 
 	_, err := c.Subscribe(ctx, &paho.Subscribe{Subscriptions: []paho.SubscribeOptions{subscription}})
 	if err != nil {
+		rollback()
 		return err
 	}
 

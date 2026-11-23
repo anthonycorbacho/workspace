@@ -107,20 +107,23 @@ The Foundation is configured with options, or environment variables (the options
 |------------------------------------------|------------------------------|----------------|
 | `WithHTTPAddr`                           | `FOUNDATION_HTTP_ADDRESS`    | `0.0.0.0:8080` |
 | `WithGRPCAddr`                           | `FOUNDATION_GRPC_ADDRESS`    | `0.0.0.0:8081` |
-| `WithGatewayDialOptions`                 |                             | plaintext transport |
+| `WithGatewayDialOptions`                 |                              | plaintext transport |
+| `WithGatewayAllowedHeaders`              |                              | all `X-*` headers |
 | `WithMetricsAddr`                        | `FOUNDATION_METRICS_ADDRESS` | `:9090`        |
 | `WithProbesAddr`                         | `FOUNDATION_PROBES_ADDRESS`  | `:9091`        |
-| `WithShutdownTimeout`                    |                             | `15s`          |
+| `WithShutdownTimeout`                    |                              | `15s`          |
+| `WithShutdownDelay`                      | `FOUNDATION_SHUTDOWN_DELAY`  | `0`            |
 | `WithLogger`                             | `FOUNDATION_LOG_LEVEL` (log) | no-op logger   |
-| `WithCORS`, `WithHTTPReadTimeout`, `WithHTTPWriteTimeout`, `WithGRPCServerOptions` | | |
+| `WithCORS`, `WithHTTPReadTimeout`, `WithHTTPWriteTimeout`, `WithHTTPReadHeaderTimeout`, `WithHTTPIdleTimeout`, `WithHTTPMaxHeaderBytes`, `WithGRPCServerOptions` | | |
 
 The traces are exported to the OTLP collector set by `OTEL_EXPORTER_OTLP_ENDPOINT` (see [telemetry](telemetry)).
 
 ### Shutdown
-On an interrupt, SIGTERM, or server failure, `/readyz` returns 503 while the service drains.
+On an interrupt, SIGTERM, context cancellation (`ServeContext`), or server failure, `/readyz` returns 503 while the service drains.
+On graceful shutdown, if `WithShutdownDelay` / `FOUNDATION_SHUTDOWN_DELAY` is set, Foundation waits that duration before stopping the public listeners so load balancers and Kubernetes EndpointSlices stop routing traffic to the pod.
 The HTTP server stops accepting requests and lets accepted requests finish using the gRPC gateway,
-then the gRPC server drains its remaining RPCs. Probes and metrics stay available during this drain.
-All servers share the `WithShutdownTimeout` grace period; remaining HTTP connections and RPCs are
+then the gRPC server drains its remaining RPCs, and registered shutdown hooks (`RegisterShutdown`) run in LIFO order. Probes and metrics stay available throughout this drain.
+All servers and hooks share the `WithShutdownTimeout` grace period; remaining HTTP connections and RPCs are
 forcibly closed when it expires. Handlers should observe their context cancellation to release resources.
 The telemetry providers are then shut down with separate 5-second flush timeouts.
 

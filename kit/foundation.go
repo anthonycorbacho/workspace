@@ -45,6 +45,13 @@ var _defaultHealthHandler = func(writer http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(writer, "ok") //nolint
 }
 
+const (
+	defaultHTTPReadHeaderTimeout = 5 * time.Second
+	defaultHTTPIdleTimeout       = 60 * time.Second
+	defaultHTTPMaxHeaderBytes    = 1 << 20
+	maxQueryParamsMetadataBytes  = 4096
+)
+
 // Foundation provides a convenient way to build new services.
 //
 // Foundation aims to provide a set of common boilerplate code for creating a production ready GRPC server and
@@ -73,6 +80,9 @@ type Foundation struct {
 	livenessProbe  http.HandlerFunc
 	readinessProbe http.HandlerFunc
 	draining       atomic.Bool
+	// Shutdown hooks
+	hooksMu       sync.Mutex
+	shutdownHooks []func(context.Context) error
 }
 
 // NewFoundation creates a new foundation service.
@@ -96,23 +106,36 @@ func NewFoundation(name string, optFns ...Option) (*Foundation, error) {
 		return nil, errors.New("foundation name is required")
 	}
 
+	var shutdownDelay time.Duration
+	if v := config.LookupEnv("FOUNDATION_SHUTDOWN_DELAY", ""); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, errors.Wrap(err, "parsing FOUNDATION_SHUTDOWN_DELAY")
+		}
+		shutdownDelay = d
+	}
+
 	// Setup default configuration
 	opts := &options{
-		httpAddr:         config.LookupEnv("FOUNDATION_HTTP_ADDRESS", "0.0.0.0:8080"),
-		grpcAddr:         config.LookupEnv("FOUNDATION_GRPC_ADDRESS", "0.0.0.0:8081"),
-		gatewayDialOpts:  []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		metricsAddr:      config.LookupEnv("FOUNDATION_METRICS_ADDRESS", ":9090"),
-		probesAddr:       config.LookupEnv("FOUNDATION_PROBES_ADDRESS", ":9091"),
-		httpWriteTimeout: 15 * time.Second,
-		httpReadTimeout:  15 * time.Second,
-		shutdownTimeout:  15 * time.Second,
-		logger:           log.NewNop(),
+		httpAddr:              config.LookupEnv("FOUNDATION_HTTP_ADDRESS", "0.0.0.0:8080"),
+		grpcAddr:              config.LookupEnv("FOUNDATION_GRPC_ADDRESS", "0.0.0.0:8081"),
+		gatewayDialOpts:       []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		metricsAddr:           config.LookupEnv("FOUNDATION_METRICS_ADDRESS", ":9090"),
+		probesAddr:            config.LookupEnv("FOUNDATION_PROBES_ADDRESS", ":9091"),
+		httpWriteTimeout:      15 * time.Second,
+		httpReadTimeout:       15 * time.Second,
+		httpReadHeaderTimeout: defaultHTTPReadHeaderTimeout,
+		httpIdleTimeout:       defaultHTTPIdleTimeout,
+		httpMaxHeaderBytes:    defaultHTTPMaxHeaderBytes,
+		shutdownTimeout:       15 * time.Second,
+		shutdownDelay:         shutdownDelay,
+		logger:                log.NewNop(),
 	}
 	for _, o := range optFns {
 		o(opts)
 	}
-	if opts.shutdownTimeout <= 0 {
-		return nil, errors.New("shutdown timeout must be positive")
+	if err := validateOptions(opts); err != nil {
+		return nil, err
 	}
 
 	// Create the Foundation service
@@ -123,6 +146,31 @@ func NewFoundation(name string, optFns ...Option) (*Foundation, error) {
 		readinessProbe: _defaultHealthHandler,
 		livenessProbe:  _defaultHealthHandler,
 	}, nil
+}
+
+func validateOptions(opts *options) error {
+	if opts.shutdownTimeout <= 0 {
+		return errors.New("shutdown timeout must be positive")
+	}
+	if opts.shutdownDelay < 0 {
+		return errors.New("shutdown delay must not be negative")
+	}
+	if opts.httpReadTimeout < 0 {
+		return errors.New("http read timeout must not be negative")
+	}
+	if opts.httpWriteTimeout < 0 {
+		return errors.New("http write timeout must not be negative")
+	}
+	if opts.httpReadHeaderTimeout < 0 {
+		return errors.New("http read header timeout must not be negative")
+	}
+	if opts.httpIdleTimeout < 0 {
+		return errors.New("http idle timeout must not be negative")
+	}
+	if opts.httpMaxHeaderBytes < 0 {
+		return errors.New("http max header bytes must not be negative")
+	}
+	return nil
 }
 
 // RegisterServiceFunc represents a function for registering a grpc service handler.
@@ -156,7 +204,7 @@ func (f *Foundation) initHTTPServerOnce() {
 			Recorder: httpMetricsRecorder(),
 		})
 
-		var h http.Handler = f.httpRouter
+		h := recoverHTTP(f.logger, f.httpRouter)
 
 		// If cors is enabled, we should set it depending on the options
 		if opts.cors != nil {
@@ -171,10 +219,13 @@ func (f *Foundation) initHTTPServerOnce() {
 
 		// create http server with options
 		f.httpServer = &http.Server{
-			Addr:         opts.httpAddr,
-			Handler:      h,
-			WriteTimeout: opts.httpWriteTimeout,
-			ReadTimeout:  opts.httpReadTimeout,
+			Addr:              opts.httpAddr,
+			Handler:           h,
+			WriteTimeout:      opts.httpWriteTimeout,
+			ReadTimeout:       opts.httpReadTimeout,
+			ReadHeaderTimeout: opts.httpReadHeaderTimeout,
+			IdleTimeout:       opts.httpIdleTimeout,
+			MaxHeaderBytes:    opts.httpMaxHeaderBytes,
 		}
 	})
 
@@ -185,6 +236,7 @@ type RegisterServiceHandlerFunc func(gw *runtime.ServeMux, conn *grpc.ClientConn
 
 // RegisterServiceHandler registers a grpc-gateway service handler.
 // The gateway's gRPC client is configured with WithGatewayDialOptions.
+// Any provided muxOpts are applied after Foundation's defaults so callers can override them.
 func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOpts ...runtime.ServeMuxOption) {
 	// Make sure we have an HTTP server setup
 	f.initHTTPServerOnce()
@@ -200,46 +252,71 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 
 		f.gwClient = conn
 
-		muxOpts = append(
-			muxOpts,
+		// Apply Foundation's defaults before caller options so callers can override
+		// routing/error handlers, header matchers, marshalers, or metadata annotators.
+		defaultOpts := []runtime.ServeMuxOption{
+			runtime.WithRoutingErrorHandler(gatewayRoutingErrorHandler(f.logger)),
 			runtime.WithErrorHandler(gatewayErrorHandler(f.logger)),
-			runtime.WithMiddlewares(telemetry.GatewayMiddleware(f.httpMetrics)),
-			runtime.WithIncomingHeaderMatcher(func(s string) (string, bool) {
-				// Allowing passing custom headers
-				if strings.HasPrefix(s, "X-") {
-					return s, true
-				}
-				return runtime.DefaultHeaderMatcher(s)
-			}),
+			runtime.WithMiddlewares(
+				telemetry.GatewayMiddleware(f.httpMetrics),
+				recoverGatewayMiddleware(f.logger),
+			),
+			runtime.WithIncomingHeaderMatcher(incomingHeaderMatcher(f.opts.gatewayAllowedHeaders)),
 			runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.HTTPBodyMarshaler{
 				Marshaler: &runtime.JSONPb{
 					UseProtoNames:   true,
 					EmitUnpopulated: true,
 				},
 			}),
-			runtime.WithMetadata(func(ctx context.Context, req *http.Request) metadata.MD {
-				md := make(map[string]string)
-				if pattern, ok := runtime.HTTPPathPattern(ctx); ok {
-					md["pattern"] = pattern
-				}
-				md["method"] = req.Method
-
-				queryParams, err := json.Marshal(req.URL.Query())
-				if err != nil {
-					queryParams = []byte{}
-				}
-				md["query-params"] = string(queryParams[:])
-
-				return metadata.New(md)
-			}),
-		)
-		f.gw = runtime.NewServeMux(muxOpts...)
+			runtime.WithMetadata(gatewayMetadata(f.logger)),
+		}
+		f.gw = runtime.NewServeMux(append(defaultOpts, muxOpts...)...)
 	})
 
 	if f.gwErr != nil {
 		return
 	}
 	fn(f.gw, f.gwClient)
+}
+
+func incomingHeaderMatcher(allowed map[string]struct{}) runtime.HeaderMatcherFunc {
+	if allowed != nil {
+		return func(s string) (string, bool) {
+			if _, ok := allowed[http.CanonicalHeaderKey(s)]; ok {
+				return s, true
+			}
+			return runtime.DefaultHeaderMatcher(s)
+		}
+	}
+	return func(s string) (string, bool) {
+		// Allowing passing custom headers by default when no allowlist is configured.
+		if strings.HasPrefix(s, "X-") {
+			return s, true
+		}
+		return runtime.DefaultHeaderMatcher(s)
+	}
+}
+
+func gatewayMetadata(l *log.Logger) func(context.Context, *http.Request) metadata.MD {
+	return func(ctx context.Context, req *http.Request) metadata.MD {
+		md := make(map[string]string, 3)
+		if pattern, ok := runtime.HTTPPathPattern(ctx); ok {
+			md["pattern"] = pattern
+		}
+		md["method"] = req.Method
+
+		if req.URL.RawQuery == "" {
+			md["query-params"] = "{}"
+		} else if queryParams, err := json.Marshal(req.URL.Query()); err == nil {
+			if len(queryParams) <= maxQueryParamsMetadataBytes {
+				md["query-params"] = string(queryParams)
+			} else {
+				l.Warn(ctx, "skipping oversized query-params gateway metadata", log.Int("bytes", len(queryParams)))
+			}
+		}
+
+		return metadata.New(md)
+	}
 }
 
 // RegisterHTTPHandler registers a custom HTTP handler.
@@ -255,7 +332,7 @@ func (f *Foundation) RegisterServiceHandler(fn RegisterServiceHandlerFunc, muxOp
 func (f *Foundation) RegisterHTTPHandler(path string, fn http.HandlerFunc, methods ...string) {
 	// make sure the HTTP server has been initialized
 	f.initHTTPServerOnce()
-	h := telemetry.Middleware(f.httpMetrics)(fn)
+	h := telemetry.Middleware(f.httpMetrics)(recoverHTTP(f.logger, fn))
 	if len(methods) == 0 {
 		f.httpRouter.Handle(path, h)
 		return
@@ -265,12 +342,37 @@ func (f *Foundation) RegisterHTTPHandler(path string, fn http.HandlerFunc, metho
 	}
 }
 
+// RegisterShutdown registers a cleanup function invoked during shutdown after the HTTP and gRPC
+// servers have drained and before the probes and metrics servers close.
+// Hooks run in reverse registration order (LIFO) within the shared WithShutdownTimeout budget.
+// A nil function is ignored.
+func (f *Foundation) RegisterShutdown(fn func(context.Context) error) {
+	if fn == nil {
+		return
+	}
+	f.hooksMu.Lock()
+	f.shutdownHooks = append(f.shutdownHooks, fn)
+	f.hooksMu.Unlock()
+}
+
 // RegisterLiveness register a liveness function for /healthz
 //
 // Many applications running for long periods of time eventually transition to broken states,
 // and cannot recover except by being restarted.
 // Kubernetes provides liveness probes to detect and remedy such situations.
 func (f *Foundation) RegisterLiveness(fn func() (string, error)) {
+	if fn == nil {
+		return
+	}
+	f.RegisterLivenessCheck(func(context.Context) (string, error) { return fn() })
+}
+
+// RegisterLivenessCheck registers a context-aware liveness function for /healthz.
+// The context is canceled if the probe client disconnects or times out.
+func (f *Foundation) RegisterLivenessCheck(fn func(context.Context) (string, error)) {
+	if fn == nil {
+		return
+	}
 	f.livenessProbe = handlerClosure(fn)
 }
 
@@ -281,13 +383,25 @@ func (f *Foundation) RegisterLiveness(fn func() (string, error)) {
 // a large number of configuration files during startup.
 // In such instances, we don’t want to kill the application, but we don’t want to send it requests either.
 func (f *Foundation) RegisterReadiness(fn func() (string, error)) {
+	if fn == nil {
+		return
+	}
+	f.RegisterReadinessCheck(func(context.Context) (string, error) { return fn() })
+}
+
+// RegisterReadinessCheck registers a context-aware readiness function for /readyz.
+// The context is canceled if the probe client disconnects or times out.
+func (f *Foundation) RegisterReadinessCheck(fn func(context.Context) (string, error)) {
+	if fn == nil {
+		return
+	}
 	f.readinessProbe = handlerClosure(fn)
 }
 
-func handlerClosure(fn func() (string, error)) http.HandlerFunc {
+func handlerClosure(fn func(context.Context) (string, error)) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		status := http.StatusOK
-		msg, err := fn()
+		msg, err := fn(request.Context())
 		if err != nil {
 			status = http.StatusInternalServerError
 			msg = err.Error()
@@ -303,7 +417,18 @@ func handlerClosure(fn func() (string, error)) http.HandlerFunc {
 // It blocks until the process receives an interrupt or terminate signal, or until one of the servers fails.
 // Shutdown marks the service unready and drains HTTP before gRPC, within the shared WithShutdownTimeout budget.
 func (f *Foundation) Serve() error {
+	return f.ServeContext(context.Background())
+}
+
+// ServeContext configures and starts serving requests for the foundation service.
+//
+// It blocks until ctx is canceled, the process receives an interrupt or terminate signal, or one of the servers fails.
+// Returning due to ctx cancellation or OS signal triggers graceful shutdown and returns nil.
+func (f *Foundation) ServeContext(ctx context.Context) error {
 	// GOMAXPROCS is container aware since go 1.25 (cgroup CPU limit), no need to set it.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	if f.gwErr != nil {
 		return f.gwErr
@@ -315,10 +440,10 @@ func (f *Foundation) Serve() error {
 		return errors.Wrap(err, "creating new tracer")
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := tracer.Shutdown(ctx); err != nil {
-			f.logger.Warn(ctx, "shutting down tracer", log.Error(err))
+		if err := tracer.Shutdown(shutdownCtx); err != nil {
+			f.logger.Warn(shutdownCtx, "shutting down tracer", log.Error(err))
 		}
 	}()
 
@@ -327,32 +452,38 @@ func (f *Foundation) Serve() error {
 		return errors.Wrap(err, "creating new meter")
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := meter.Shutdown(ctx); err != nil {
-			f.logger.Warn(ctx, "shutting down meter", log.Error(err))
+		if err := meter.Shutdown(shutdownCtx); err != nil {
+			f.logger.Warn(shutdownCtx, "shutting down meter", log.Error(err))
 		}
 	}()
 
 	// health probes, profiling and metrics are served on their own servers,
 	// so they are not exposed with the public HTTP server.
+	// WriteTimeout is intentionally left unset so pprof CPU profiles (default 30s) can stream to completion.
 	internalServers := []*http.Server{
 		{
-			Addr:        f.opts.probesAddr,
-			Handler:     internalRouter(f.handleReadiness, f.livenessProbe),
-			ReadTimeout: 15 * time.Second,
+			Addr:              f.opts.probesAddr,
+			Handler:           internalRouter(f.handleReadiness, f.livenessProbe),
+			ReadTimeout:       15 * time.Second,
+			ReadHeaderTimeout: defaultHTTPReadHeaderTimeout,
+			IdleTimeout:       defaultHTTPIdleTimeout,
+			MaxHeaderBytes:    defaultHTTPMaxHeaderBytes,
 		},
 		{
-			Addr:        f.opts.metricsAddr,
-			Handler:     metricsRouter(),
-			ReadTimeout: 15 * time.Second,
+			Addr:              f.opts.metricsAddr,
+			Handler:           metricsRouter(),
+			ReadTimeout:       15 * time.Second,
+			ReadHeaderTimeout: defaultHTTPReadHeaderTimeout,
+			IdleTimeout:       defaultHTTPIdleTimeout,
+			MaxHeaderBytes:    defaultHTTPMaxHeaderBytes,
 		},
 	}
 
-	// shutdown channel to listen for an interrupt or terminate signal from the OS.
-	shutdown := make(chan os.Signal, 1)
-	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(shutdown)
+	// Listen for an interrupt or terminate signal from the OS, or caller context cancellation.
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Make a channel to listen for errors coming from the listeners. It is buffered
 	// for every server so the goroutines can exit if we don't collect their error.
@@ -367,7 +498,7 @@ func (f *Foundation) Serve() error {
 	}
 
 	if err := f.startGRPCServer(serverError); err != nil {
-		f.shutdown(internalServers...)
+		f.drain(false, internalServers...)
 		return err
 	}
 	f.startHTTPServer(serverError)
@@ -377,10 +508,11 @@ func (f *Foundation) Serve() error {
 	var serveErr error
 	select {
 	case serveErr = <-serverError:
-	case <-shutdown:
+		f.drain(false, internalServers...)
+	case <-sigCtx.Done():
+		f.shutdown(internalServers...)
 	}
 
-	f.shutdown(internalServers...)
 	return serveErr
 }
 

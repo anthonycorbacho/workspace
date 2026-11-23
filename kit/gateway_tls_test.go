@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"net"
@@ -155,6 +156,10 @@ func TestGatewayTLS(t *testing.T) {
 			require.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
 			if tt.wantName != "" {
 				assert.JSONEq(t, `{"name":"`+tt.wantName+`"}`, rec.Body.String())
+			} else {
+				var body httpError
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+				assert.Equal(t, "service unavailable", body.Message)
 			}
 		})
 	}

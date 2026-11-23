@@ -278,11 +278,8 @@ func (m *mqttTestSuite) TestPublishRetained() {
 		retain  bool
 	}
 	ch := make(chan retained, 1)
-	c.route.RegisterHandler(topic, func(p *paho.Publish) {
+	err = c.subscribe(context.Background(), paho.SubscribeOptions{Topic: topic, QoS: 1}, func(p *paho.Publish) {
 		ch <- retained{payload: string(p.Payload), retain: p.Retain}
-	})
-	_, err = c.Subscribe(context.Background(), &paho.Subscribe{
-		Subscriptions: []paho.SubscribeOptions{{Topic: topic, QoS: 1}},
 	})
 	m.Require().NoError(err)
 

@@ -39,7 +39,7 @@ func streamServerErrorInterceptor(l *log.Logger) grpc.StreamServerInterceptor {
 func serverError(ctx context.Context, l *log.Logger, method string, err error) error {
 	coded := FromError(err)
 	switch coded.Kind {
-	case errors.KindInternal, errors.KindUnknown, errors.KindDataLoss:
+	case errors.KindInternal, errors.KindUnknown, errors.KindDataLoss, errors.KindUnavailable:
 		l.Error(ctx, "grpc request failed", log.String("grpc.method", method), log.Error(err))
 	}
 	return Status(coded).Err()

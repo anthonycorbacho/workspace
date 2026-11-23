@@ -205,6 +205,47 @@ func TestSubscriberRetriesRestoration(t *testing.T) {
 	ackMQTTSubscription(t, conn, sub, packets.SubackGrantedQoS2, packets.SubackGrantedQoS2)
 }
 
+func TestSubscriberRetriesRejectedHandler(t *testing.T) {
+	client, _, conn := newMQTTTestClient(t)
+	subscriber, err := NewSubscriber(client)
+	require.NoError(t, err)
+	const topic = "kit/registration/retry"
+	deliveries := make(chan string, 8)
+	subscribe := func(name string) (*packets.Subscribe, <-chan error) {
+		t.Helper()
+		result := make(chan error, 1)
+		go func() {
+			result <- subscriber.Subscribe(t.Context(), topic, func(context.Context, pubsub.Message, map[string]string) error {
+				deliveries <- name
+				return nil
+			})
+		}()
+		return readMQTTPacket(t, conn, packets.SUBSCRIBE).Content.(*packets.Subscribe), result
+	}
+	publish := func(packetID uint16, want ...string) {
+		t.Helper()
+		writeMQTTPacket(t, conn, &packets.Publish{Topic: topic, QoS: 1, PacketID: packetID, Properties: &packets.Properties{}})
+		// The broker sees PUBACK only after all the matching handlers have returned.
+		readMQTTPacket(t, conn, packets.PUBACK)
+		var got []string
+		for range len(deliveries) {
+			got = append(got, <-deliveries)
+		}
+		assert.ElementsMatch(t, want, got)
+	}
+	sub, done := subscribe("existing")
+	publish(1, "existing") // MQTT allows PUBLISH before SUBACK.
+	ackMQTTSubscription(t, conn, sub, packets.SubackGrantedQoS2)
+	require.NoError(t, awaitMQTTResult(t, done))
+	sub, done = subscribe("rejected")
+	ackMQTTSubscription(t, conn, sub, packets.SubackNotauthorized)
+	require.Error(t, awaitMQTTResult(t, done))
+	sub, done = subscribe("retried")
+	ackMQTTSubscription(t, conn, sub, packets.SubackGrantedQoS2)
+	require.NoError(t, awaitMQTTResult(t, done))
+	publish(2, "existing", "retried")
+}
+
 func TestSubscriberCloseDuringRestoration(t *testing.T) {
 	client, peer, conn := newMQTTTestClient(t)
 	subscriber, err := NewSubscriber(client)

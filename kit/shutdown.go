@@ -3,6 +3,8 @@ package kit
 import (
 	"context"
 	"net/http"
+	"slices"
+	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"google.golang.org/grpc"
@@ -17,10 +19,20 @@ func (f *Foundation) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	f.readinessProbe(w, r)
 }
 
-// shutdown drains the public servers before closing the probes and metrics servers.
-// All the servers share a deadline so each phase cannot start a new grace period.
+// shutdown drains the public servers, runs shutdown hooks, and closes the probes and metrics servers.
 func (f *Foundation) shutdown(internalServers ...*http.Server) {
+	f.drain(true, internalServers...)
+}
+
+// drain marks the service unready, optionally waits for shutdownDelay, then drains the public servers,
+// runs registered shutdown hooks in LIFO order, and closes the internal servers within the shared deadline.
+func (f *Foundation) drain(waitDelay bool, internalServers ...*http.Server) {
 	f.draining.Store(true)
+	if waitDelay && f.opts.shutdownDelay > 0 {
+		f.logger.Info(context.Background(), "waiting before draining traffic", log.Duration("delay", f.opts.shutdownDelay))
+		time.Sleep(f.opts.shutdownDelay)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), f.opts.shutdownTimeout)
 	defer cancel()
 
@@ -38,7 +50,17 @@ func (f *Foundation) shutdown(internalServers ...*http.Server) {
 		shutdownGRPC(ctx, f.logger, f.grpcServer)
 	}
 
-	// Keep readiness and metrics available throughout the public servers' drain.
+	// Run application shutdown hooks in reverse registration order (LIFO) once inbound traffic has drained.
+	f.hooksMu.Lock()
+	hooks := slices.Clone(f.shutdownHooks)
+	f.hooksMu.Unlock()
+	for i := len(hooks) - 1; i >= 0; i-- {
+		if err := hooks[i](ctx); err != nil {
+			f.logger.Warn(ctx, "running shutdown hook", log.Error(err))
+		}
+	}
+
+	// Keep readiness and metrics available throughout the public servers' drain and hooks.
 	shutdownServers(ctx, f.logger, internalServers...)
 }
 

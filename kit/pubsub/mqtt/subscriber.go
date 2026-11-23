@@ -67,7 +67,11 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 
 	// the handlers are called until the client is disconnected, not until ctx is done.
 	subCtx := context.WithoutCancel(ctx)
-	s.client.route.RegisterHandler(subscription, func(msg *paho.Publish) {
+	return s.client.subscribe(ctx, paho.SubscribeOptions{
+		Topic:          subscription,
+		QoS:            2,
+		RetainHandling: 2,
+	}, func(msg *paho.Publish) {
 		ctx, span := startProcessSpan(subCtx, tracer, msg)
 		defer span.End()
 
@@ -88,11 +92,6 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string, 
 		if err := handler(ctx, msg.Payload, metadata, func() {}, func(error) {}); err != nil {
 			tracing.RecordError(span, err)
 		}
-	})
-	return s.client.subscribe(ctx, paho.SubscribeOptions{
-		Topic:          subscription,
-		QoS:            2,
-		RetainHandling: 2,
 	})
 }
 

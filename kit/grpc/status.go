@@ -68,6 +68,7 @@ func Status(e *errors.Error) *status.Status {
 // FromStatus returns the coded error of a gRPC status:
 //   - the coded error carried by its errdetails.v1.Error detail (eg: returned by another service).
 //   - Internal for an internal error without coded error, its message may leak internal information.
+//   - Unclassified with a public message for an uncoded Unavailable status (e.g. a dial or TLS failure).
 //   - Unclassified with the kind and message of the status otherwise (eg: a third party service).
 func FromStatus(st *status.Status) *errors.Error {
 	if st.Code() == codes.OK {
@@ -90,6 +91,8 @@ func FromStatus(st *status.Status) *errors.Error {
 	switch kind {
 	case errors.KindUnknown, errors.KindInternal, errors.KindDataLoss:
 		return errors.Internal()
+	case errors.KindUnavailable:
+		return errors.NewUnclassified(kind, "service unavailable")
 	}
 	return errors.NewUnclassified(kind, st.Message())
 }
