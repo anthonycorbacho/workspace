@@ -132,7 +132,7 @@ func WithHTTPMaxHeaderBytes(maxBytes int) Option {
 
 // WithShutdownTimeout sets the shared grace period for draining the HTTP, gRPC, probes and metrics servers
 // and running registered shutdown hooks. It defaults to 15 seconds and must be positive.
-// Remaining connections are forcibly closed when it expires.
+// When it expires, Foundation stops waiting for hooks and forcibly closes remaining connections.
 // The telemetry providers have separate flush timeouts.
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(o *options) {

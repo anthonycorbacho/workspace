@@ -368,10 +368,12 @@ func TestHTTPPanicRecovery(t *testing.T) {
 		assert.True(t, metricHandlers(t)["/boom/{id}"], "metric recorded for panicking route")
 	})
 
-	t.Run("panic after writing headers keeps original status", func(t *testing.T) {
+	t.Run("panic after writing headers aborts without appending an error", func(t *testing.T) {
 		logBuf.Reset()
 		rec := httptest.NewRecorder()
-		f.httpServer.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/partial", nil))
+		require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+			f.httpServer.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/partial", nil))
+		})
 
 		assert.Equal(t, http.StatusAccepted, rec.Code)
 		assert.Equal(t, "partial", rec.Body.String())
@@ -397,6 +399,47 @@ func TestHTTPPanicRecovery(t *testing.T) {
 		assert.Equal(t, errors.InternalCode, body.Code)
 		assert.Contains(t, logBuf.String(), "gateway secret")
 	})
+}
+
+func TestHTTPPanicRecoveryOnWire(t *testing.T) {
+	f, err := NewFoundation("panic-stream")
+	require.NoError(t, err)
+	f.RegisterHTTPHandler("/flush", func(w http.ResponseWriter, _ *http.Request) {
+		w.(http.Flusher).Flush() // Commits an implicit 200 without writing a body.
+		panic("after flush")
+	})
+	f.RegisterHTTPHandler("/hints", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusEarlyHints) // A final response is still possible.
+		panic("after early hints")
+	})
+	f.RegisterServiceHandler(func(gw *runtime.ServeMux, _ *grpc.ClientConn) {
+		require.NoError(t, gw.HandlePath(http.MethodGet, "/v1/stream", func(w http.ResponseWriter, _ *http.Request, _ map[string]string) {
+			_, _ = io.WriteString(w, "first record\n")
+			w.(http.Flusher).Flush()
+			panic("after first record")
+		}))
+	})
+	t.Cleanup(func() { _ = f.gwClient.Close() })
+	f.httpRouter.Handle("/", f.gw)
+	srv := httptest.NewServer(f.httpServer.Handler)
+	defer srv.Close()
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}, Timeout: 3 * time.Second}
+	defer client.CloseIdleConnections()
+
+	for _, tc := range []struct{ path, prefix string }{{"/flush", ""}, {"/v1/stream", "first record\n"}} {
+		t.Run(tc.path, func(t *testing.T) {
+			res := getHTTPResult(client, srv.URL+tc.path)
+			assert.Equal(t, http.StatusOK, res.status)
+			assert.Equal(t, tc.prefix, res.body)
+			assert.ErrorIs(t, res.err, io.ErrUnexpectedEOF, "the client must see an interrupted response")
+		})
+	}
+	res := getHTTPResult(client, srv.URL+"/hints")
+	require.NoError(t, res.err)
+	assert.Equal(t, http.StatusInternalServerError, res.status)
+	var body httpError
+	require.NoError(t, json.Unmarshal([]byte(res.body), &body))
+	assert.Equal(t, errors.InternalCode, body.Code)
 }
 
 func TestServeContextCancel(t *testing.T) {

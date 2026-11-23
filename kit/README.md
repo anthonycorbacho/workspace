@@ -70,8 +70,9 @@ if gatewayErr != nil {
 
 The requests are validated with their protovalidate rules, and the handlers return coded errors
 (see [errors](errors) and [application-error.md](../sdlc/documentation/application-error.md)).
-Both custom HTTP routes (`RegisterHTTPHandler`) and grpc-gateway handlers are wrapped with panic recovery
-that logs the panic with trace correlation and returns a `500` `ERR_00000` JSON response with `trace_id`.
+If a custom HTTP route or grpc-gateway handler panics, Foundation logs the panic with its trace ID.
+Before the response is committed, the client gets a `500` `ERR_00000` JSON response with `trace_id` when available.
+After a final status, body write, or flush, Foundation aborts the response so a client can detect the interrupted stream.
 
 ### Health probes
 Custom liveness (`/healthz`) and readiness (`/readyz`) checks can be registered with
@@ -130,8 +131,9 @@ On an interrupt, SIGTERM, context cancellation (`ServeContext`), or server failu
 On graceful shutdown, if `WithShutdownDelay` / `FOUNDATION_SHUTDOWN_DELAY` is set, Foundation waits that duration before stopping the public listeners so load balancers and Kubernetes EndpointSlices stop routing traffic to the pod.
 The HTTP server stops accepting requests and lets accepted requests finish using the gRPC gateway,
 then the gRPC server drains its remaining RPCs, and registered shutdown hooks (`RegisterShutdown`) run in LIFO order. Probes and metrics stay available throughout this drain.
-All servers and hooks share the `WithShutdownTimeout` grace period; remaining HTTP connections and RPCs are
-forcibly closed when it expires. Handlers should observe their context cancellation to release resources.
+All servers and hooks share the `WithShutdownTimeout` grace period. At the deadline Foundation stops waiting for
+the current hook, skips hooks that haven't started, and forcibly closes remaining connections. A running hook
+cannot be forcibly stopped; it must respect its context to release resources promptly.
 The telemetry providers are then shut down with separate 5-second flush timeouts.
 
 ## Packages

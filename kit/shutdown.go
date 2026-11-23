@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/log"
 	"google.golang.org/grpc"
 )
@@ -50,18 +51,47 @@ func (f *Foundation) drain(waitDelay bool, internalServers ...*http.Server) {
 		shutdownGRPC(ctx, f.logger, f.grpcServer)
 	}
 
-	// Run application shutdown hooks in reverse registration order (LIFO) once inbound traffic has drained.
+	f.runShutdownHooks(ctx)
+	// Keep readiness and metrics available throughout the public servers' drain and hooks.
+	shutdownServers(ctx, f.logger, internalServers...)
+}
+
+func (f *Foundation) runShutdownHooks(ctx context.Context) {
 	f.hooksMu.Lock()
 	hooks := slices.Clone(f.shutdownHooks)
 	f.hooksMu.Unlock()
-	for i := len(hooks) - 1; i >= 0; i-- {
-		if err := hooks[i](ctx); err != nil {
-			f.logger.Warn(ctx, "running shutdown hook", log.Error(err))
+
+	// Only one hook runs at a time. It can still report its result if we stop waiting.
+	result := make(chan error, 1)
+	for i, hook := range slices.Backward(hooks) {
+		if err := ctx.Err(); err != nil {
+			f.logger.Warn(ctx, "skipping shutdown hooks", log.Int("remaining", i+1), log.Error(err))
+			return
+		}
+		go func() { result <- callShutdownHook(ctx, hook) }()
+		select {
+		case err := <-result:
+			if err != nil {
+				f.logger.Warn(ctx, "running shutdown hook", log.Error(err))
+			}
+		case <-ctx.Done():
+			f.logger.Warn(ctx, "shutdown hook exceeded grace period", log.Int("skipped", i), log.Error(ctx.Err()))
+			return
 		}
 	}
+}
 
-	// Keep readiness and metrics available throughout the public servers' drain and hooks.
-	shutdownServers(ctx, f.logger, internalServers...)
+// A hook runs in its own goroutine; contain its panic there, even if shutdown has returned.
+func callShutdownHook(ctx context.Context, hook func(context.Context) error) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			err = errors.Newf("shutdown hook panicked: %v", p)
+		}
+	}()
+	return hook(ctx)
 }
 
 // shutdownGRPC allows pending RPCs to finish until ctx is done, then forces their connections closed.

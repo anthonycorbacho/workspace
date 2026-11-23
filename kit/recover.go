@@ -14,8 +14,8 @@ import (
 )
 
 // recoverHTTP recovers panics in next, logs them with trace correlation, marks the active span as errored,
-// and returns a coded 500 Internal JSON response if no response header has been written yet.
-// http.ErrAbortHandler is re-panicked per the net/http contract.
+// and returns a coded 500 if the response is still uncommitted. Otherwise it aborts the stream.
+// An explicit http.ErrAbortHandler passes through without being logged again.
 func recoverHTTP(l *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &panicResponseWriter{ResponseWriter: w}
@@ -30,13 +30,14 @@ func recoverHTTP(l *log.Logger, next http.Handler) http.Handler {
 			ctx := r.Context()
 			l.Error(ctx, "http recover panic", log.Any("panic", p))
 			trace.SpanFromContext(ctx).SetStatus(otelcodes.Error, "http recover panic")
-			if !rw.wroteHeader {
-				internal := errors.Internal()
-				writeGatewayError(ctx, l, rw, http.StatusInternalServerError, httpError{
-					Code:    internal.Code,
-					Message: internal.Message,
-				})
+			if rw.committed {
+				panic(http.ErrAbortHandler)
 			}
+			internal := errors.Internal()
+			writeGatewayError(ctx, l, rw, http.StatusInternalServerError, httpError{
+				Code:    internal.Code,
+				Message: internal.Message,
+			})
 		}()
 		next.ServeHTTP(rw, r)
 	})
@@ -56,16 +57,19 @@ func recoverGatewayMiddleware(l *log.Logger) runtime.Middleware {
 
 type panicResponseWriter struct {
 	http.ResponseWriter
-	wroteHeader bool
+	committed bool
 }
 
 func (w *panicResponseWriter) WriteHeader(code int) {
-	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(code)
+	// Informational responses other than 101 can still be followed by a final status.
+	if code >= 200 || code == http.StatusSwitchingProtocols {
+		w.committed = true
+	}
 }
 
 func (w *panicResponseWriter) Write(p []byte) (int, error) {
-	w.wroteHeader = true
+	w.committed = true
 	return w.ResponseWriter.Write(p)
 }
 
@@ -75,6 +79,7 @@ func (w *panicResponseWriter) Unwrap() http.ResponseWriter {
 
 func (w *panicResponseWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		w.committed = true
 		f.Flush()
 	}
 }
@@ -84,7 +89,11 @@ func (w *panicResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, fmt.Errorf("response writer does not implement http.Hijacker")
 	}
-	return h.Hijack()
+	conn, rw, err := h.Hijack()
+	if err == nil {
+		w.committed = true
+	}
+	return conn, rw, err
 }
 
 var (

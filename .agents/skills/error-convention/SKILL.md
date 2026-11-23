@@ -107,7 +107,7 @@ if errors.HasCode(err, errors.SampleUserNotFoundCode) {
 ```
 
 ### Handler layer (`cmd/<service>/grpc_*.go`)
-Return service errors as-is. `kit/grpc` converts `*errors.Error` to gRPC status + `errdetails.v1.Error` detail, turns non-coded errors into `errors.Internal()` (`ERR_00000`), and recovers panics as `ERR_00000`. HTTP custom routes and grpc-gateway handlers also recover panics into `500` `ERR_00000` JSON with `trace_id`.
+Return service errors as-is. `kit/grpc` converts `*errors.Error` to gRPC status + `errdetails.v1.Error` detail, turns non-coded errors into `errors.Internal()` (`ERR_00000`), and recovers panics as `ERR_00000`. For custom HTTP routes and grpc-gateway handlers, a panic before the response is committed returns `500` `ERR_00000` JSON with `trace_id` when available. A panic after commitment aborts the response.
 
 ## Style Guidelines
 - Error messages start lowercase with no trailing punctuation: `unable to open file`.

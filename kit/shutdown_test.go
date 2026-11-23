@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	pb "github.com/anthonycorbacho/workspace/api/sample/sampleapp/v1"
@@ -335,7 +336,7 @@ func TestShutdownHooks(t *testing.T) {
 	})
 	f.RegisterShutdown(func(context.Context) error {
 		record("hook-3")
-		return nil
+		panic("cleanup failed")
 	})
 
 	client := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
@@ -357,6 +358,44 @@ func TestShutdownHooks(t *testing.T) {
 	assert.Equal(t, http.StatusOK, res.status)
 	awaitResult(t, shutdownDone)
 
-	// Hooks must run after HTTP drains, in LIFO order, and an error must not skip remaining hooks.
+	// Hooks run after HTTP drains, in LIFO order, even when a callback panics or returns an error.
 	assert.Equal(t, []string{"http-done", "hook-3", "hook-2-err", "hook-1"}, order)
+}
+
+func TestShutdownBoundsBlockedHook(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = time.Second
+		f, err := NewFoundation("shutdown-hooks", WithShutdownDelay(0), WithShutdownTimeout(budget))
+		require.NoError(t, err)
+
+		var skippedRan, internalClosed bool
+		var hookCtx context.Context
+		f.RegisterShutdown(func(context.Context) error {
+			skippedRan = true
+			return nil
+		})
+		f.RegisterShutdown(func(ctx context.Context) error {
+			hookCtx = ctx
+			time.Sleep(2 * budget) // This cleanup ignores cancellation.
+			return nil
+		})
+		f.RegisterShutdown(func(context.Context) error {
+			time.Sleep(budget / 2)
+			return nil
+		})
+		internal := &http.Server{}
+		internal.RegisterOnShutdown(func() { internalClosed = true })
+
+		start := time.Now()
+		f.shutdown(internal)
+		synctest.Wait()
+		assert.Equal(t, budget, time.Since(start), "all hooks share one deadline")
+		require.NotNil(t, hookCtx)
+		assert.ErrorIs(t, hookCtx.Err(), context.DeadlineExceeded)
+		assert.True(t, internalClosed, "internal servers close even while the hook is blocked")
+
+		time.Sleep(2 * budget) // Let the abandoned hook return.
+		synctest.Wait()
+		assert.False(t, skippedRan, "pending hooks must not run after shutdown")
+	})
 }

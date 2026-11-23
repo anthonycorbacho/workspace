@@ -37,11 +37,11 @@ Services are bootstrapped with `kit.NewFoundation(name, opts...)`:
 - **Lifecycle**:
   - Register gRPC services (`RegisterService`), gateway handlers (`RegisterServiceHandler`), and custom HTTP routes (`RegisterHTTPHandler`).
   - Register context-aware probes (`RegisterLivenessCheck`, `RegisterReadinessCheck`).
-  - Register cleanup hooks (`RegisterShutdown`) — executed in LIFO order after HTTP and gRPC drain.
+  - Register cleanup hooks (`RegisterShutdown`) in dependency order; they run in reverse after HTTP and gRPC drain. Respect the shared shutdown deadline: Foundation stops waiting and skips pending hooks when it expires.
   - Run with `Serve()` or `ServeContext(ctx)`.
   - Configure `WithShutdownDelay` / `FOUNDATION_SHUTDOWN_DELAY` for zero-downtime Kubernetes rolling deploys (readiness flips to `503` while public listeners wait before draining).
 - **Hardening**:
-  - HTTP panic recovery wraps both custom routes and grpc-gateway routes, logging with trace correlation and returning `500` `ERR_00000` JSON with `trace_id`.
+  - Custom HTTP and grpc-gateway routes log panics with trace correlation. Recovery returns `500` `ERR_00000` before the response is committed and aborts an in-progress response.
   - Default HTTP timeouts (`ReadTimeout: 15s`, `WriteTimeout: 15s`, `ReadHeaderTimeout: 5s`, `IdleTimeout: 60s`, `MaxHeaderBytes: 1 MiB`) and optional `WithGatewayAllowedHeaders`.
 
 ### Service Layout (`sdlc/documentation/go-application-layout.md`)

@@ -345,6 +345,8 @@ func (f *Foundation) RegisterHTTPHandler(path string, fn http.HandlerFunc, metho
 // RegisterShutdown registers a cleanup function invoked during shutdown after the HTTP and gRPC
 // servers have drained and before the probes and metrics servers close.
 // Hooks run in reverse registration order (LIFO) within the shared WithShutdownTimeout budget.
+// At the deadline Foundation stops waiting and skips pending hooks. A running hook must observe
+// its context to stop its own work.
 // A nil function is ignored.
 func (f *Foundation) RegisterShutdown(fn func(context.Context) error) {
 	if fn == nil {

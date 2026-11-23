@@ -184,7 +184,7 @@ detail (code, message, details). Through the HTTP gateway, the gRPC code is mapp
 The kit gRPC server and client handle the conversions (`kit/grpc.Status`, `kit/grpc.FromStatus`):
 - a plain error returned by a handler becomes an `Internal` error (`ERR_00000`), it is logged but its message is not sent.
 - an invalid request (protovalidate rules) is rejected with `InvalidRequest` (`ERR_00001`), the violations are in the details.
-- a panic in gRPC, grpc-gateway, or custom HTTP handlers is recovered as an `Internal` (`ERR_00000`) error.
+- a gRPC handler panic becomes `Internal` (`ERR_00000`). A grpc-gateway or custom HTTP handler panic returns the same coded error with HTTP 500 before the response is committed; after that, the HTTP stream is aborted.
 - the kit gRPC client returns coded errors: `errors.HasCode` works across services, and a coded error returned as is
   by a service reaches the end client with its code.
 
