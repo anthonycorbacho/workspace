@@ -2,20 +2,26 @@ package log
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/config"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // A Logger provides fast, leveled, structured logging.
 // All methods are safe for concurrent use.
 type Logger struct {
-	log *zap.Logger
+	handler slog.Handler
+	level   Level
+	output  io.Writer
+	onFatal func()
 }
 
 // New is a reasonable production logging configuration.
@@ -38,21 +44,14 @@ func New(opts ...Option) (*Logger, error) {
 		opt(o)
 	}
 
-	encoder := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
-		TimeKey:       "Timestamp",
-		LevelKey:      "Severity",
-		FunctionKey:   zapcore.OmitKey,
-		MessageKey:    "Body",
-		StacktraceKey: "Stacktrace",
-		LineEnding:    zapcore.DefaultLineEnding,
-		EncodeLevel:   zapcore.CapitalLevelEncoder,
-		EncodeTime:    zapcore.EpochNanosTimeEncoder,
-	})
-	core := zapcore.NewCore(encoder, zapcore.Lock(zapcore.AddSync(o.output)), zap.NewAtomicLevelAt(zapcore.Level(o.level)))
-	core = zapcore.NewSamplerWithOptions(core, time.Second, 100, 100)
+	jsonHandler := newJSONHandler(o.output, o.level)
+	sampled := newSamplingHandler(jsonHandler, time.Second, 100, 100)
 
 	return &Logger{
-		log: zap.New(core, zap.ErrorOutput(zapcore.Lock(os.Stderr)), zap.AddStacktrace(zapcore.ErrorLevel)),
+		handler: sampled,
+		level:   o.level,
+		output:  o.output,
+		onFatal: func() { os.Exit(1) },
 	}, nil
 }
 
@@ -60,42 +59,44 @@ func New(opts ...Option) (*Logger, error) {
 // and it never runs user-defined hooks.
 func NewNop() *Logger {
 	return &Logger{
-		log: zap.NewNop(),
+		handler: slog.DiscardHandler,
+		level:   FatalLevel + 1,
 	}
 }
 
-// Close is flushing any buffered log entries.
+// Close flushes any buffered log entries if the underlying output supports syncing.
 // Applications should take care to call Close before exiting.
 func (l *Logger) Close() {
-	if l == nil || l.log == nil {
+	if l == nil || l.output == nil {
 		return
 	}
-
-	_ = l.log.Sync() //nolint
+	if syncer, ok := l.output.(interface{ Sync() error }); ok {
+		_ = syncer.Sync() //nolint:errcheck // best-effort flush on exit.
+	}
 }
 
 // Debug logs a message at DebugLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Debug(ctx context.Context, message string, fields ...Field) {
-	l.write(zapcore.DebugLevel, ctx, message, fields...)
+	l.write(DebugLevel, ctx, message, fields...)
 }
 
 // Info logs a message at InfoLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Info(ctx context.Context, message string, fields ...Field) {
-	l.write(zapcore.InfoLevel, ctx, message, fields...)
+	l.write(InfoLevel, ctx, message, fields...)
 }
 
 // Warn logs a message at WarnLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Warn(ctx context.Context, message string, fields ...Field) {
-	l.write(zapcore.WarnLevel, ctx, message, fields...)
+	l.write(WarnLevel, ctx, message, fields...)
 }
 
 // Error logs a message at ErrorLevel. The message includes any fields passed
 // at the log site, as well as any fields accumulated on the logger.
 func (l *Logger) Error(ctx context.Context, message string, fields ...Field) {
-	l.write(zapcore.ErrorLevel, ctx, message, fields...)
+	l.write(ErrorLevel, ctx, message, fields...)
 }
 
 // Fatal logs a message at FatalLevel. The message includes any fields passed
@@ -104,45 +105,112 @@ func (l *Logger) Error(ctx context.Context, message string, fields ...Field) {
 // The logger then calls os.Exit(1), even if logging at FatalLevel is
 // disabled.
 func (l *Logger) Fatal(ctx context.Context, message string, fields ...Field) {
-	l.write(zapcore.FatalLevel, ctx, message, fields...)
+	l.write(FatalLevel, ctx, message, fields...)
 }
 
-func (l *Logger) write(level zapcore.Level, ctx context.Context, msg string, fields ...Field) {
-	if l == nil || l.log == nil {
+func (l *Logger) write(level Level, ctx context.Context, msg string, fields ...Field) {
+	if l == nil || l.handler == nil {
 		return
 	}
-	ce := l.log.Check(level, msg)
-	if ce == nil {
-		return
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	attributes := attributeFields(fields...)
-	var sc trace.SpanContext
-	if ctx != nil {
-		sc = trace.SpanFromContext(ctx).SpanContext()
-	}
-
-	// If trace information is not set (non trace context)
-	// we will not log traceid.
-	if !sc.IsValid() {
-		ce.Write(attributeField(attributes))
+	slevel := level.slogLevel()
+	enabled := l.handler.Enabled(ctx, slevel)
+	if !enabled && level < FatalLevel {
 		return
 	}
 
-	ce.Write(
-		String("TraceId", sc.TraceID().String()),
-		String("SpanId", sc.SpanID().String()),
-		String("TraceFlags", sc.TraceFlags().String()),
-		attributeField(attributes),
-	)
+	if enabled {
+		var pcs [1]uintptr
+		// Skip: runtime.Callers -> Logger.write -> Logger.<Level>
+		runtime.Callers(3, pcs[:])
+
+		rec := slog.NewRecord(time.Now(), slevel, msg, pcs[0])
+		if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+			rec.AddAttrs(
+				slog.String("TraceId", sc.TraceID().String()),
+				slog.String("SpanId", sc.SpanID().String()),
+				slog.String("TraceFlags", sc.TraceFlags().String()),
+			)
+		}
+
+		rec.AddAttrs(buildAttributes(callerFullPath(pcs[0]), fields))
+		if level >= ErrorLevel {
+			if stack := captureStacktrace(3); stack != "" {
+				rec.AddAttrs(slog.String("Stacktrace", stack))
+			}
+		}
+
+		if err := l.handler.Handle(ctx, rec); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "log handler error: %v\n", err) //nolint:errcheck // best-effort fallback to stderr.
+		}
+	}
+
+	if level >= FatalLevel && l.onFatal != nil {
+		l.onFatal()
+	}
 }
 
-func attributeFields(fields ...Field) *attributes {
-	atts := newAttributes()
-	caller := zapcore.NewEntryCaller(runtime.Caller(3))
-	atts.Add(zap.String("caller.full_path", caller.FullPath()))
-	for _, f := range fields {
-		atts.Add(f)
+func newJSONHandler(w io.Writer, level Level) slog.Handler {
+	return slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level: level.slogLevel(),
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) != 0 {
+				return a
+			}
+			switch a.Key {
+			case slog.TimeKey:
+				return slog.Int64("Timestamp", a.Value.Time().UnixNano())
+			case slog.LevelKey:
+				if lvl, ok := a.Value.Any().(slog.Level); ok {
+					return slog.String("Severity", formatLevel(lvl))
+				}
+				return slog.String("Severity", a.Value.String())
+			case slog.MessageKey:
+				return slog.String("Body", a.Value.String())
+			default:
+				return a
+			}
+		},
+	})
+}
+
+func callerFullPath(pc uintptr) string {
+	if pc == 0 {
+		return ""
 	}
-	return atts
+	frame, _ := runtime.CallersFrames([]uintptr{pc}).Next()
+	if frame.File == "" {
+		return ""
+	}
+	return frame.File + ":" + strconv.Itoa(frame.Line)
+}
+
+func captureStacktrace(skip int) string {
+	const maxDepth = 64
+	var pcs [maxDepth]uintptr
+	n := runtime.Callers(skip+1, pcs[:])
+	if n == 0 {
+		return ""
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	var b strings.Builder
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" {
+			b.WriteString(frame.Function)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\t')
+		b.WriteString(frame.File)
+		b.WriteByte(':')
+		b.WriteString(strconv.Itoa(frame.Line))
+		if !more {
+			break
+		}
+		b.WriteByte('\n')
+	}
+	return b.String()
 }

@@ -12,8 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // syncBuffer is a concurrent safe buffer used as log output.
@@ -48,16 +46,12 @@ func (b *syncBuffer) entries(t *testing.T) []map[string]any {
 // newTestLogger returns a logger writing json entries in the returned buffer.
 func newTestLogger(level Level) (*Logger, *syncBuffer) {
 	out := &syncBuffer{}
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(zapcore.EncoderConfig{
-			LevelKey:    "Severity",
-			MessageKey:  "Body",
-			EncodeLevel: zapcore.CapitalLevelEncoder,
-		}),
-		zapcore.AddSync(out),
-		zapcore.Level(level),
-	)
-	return &Logger{log: zap.New(core, zap.WithFatalHook(zapcore.WriteThenPanic))}, out
+	return &Logger{
+		handler: newJSONHandler(out, level),
+		level:   level,
+		output:  out,
+		onFatal: func() { panic("fatal") },
+	}, out
 }
 
 func TestNew(t *testing.T) {
@@ -97,11 +91,11 @@ func TestNewLevel(t *testing.T) {
 		name  string
 		env   string
 		opts  []Option
-		level zapcore.Level
+		level Level
 	}{
-		{name: "default is info", level: zapcore.InfoLevel},
-		{name: "from env", env: "DEBUG", level: zapcore.DebugLevel},
-		{name: "option overrides env", env: "debug", opts: []Option{WithLevel(WarnLevel)}, level: zapcore.WarnLevel},
+		{name: "default is info", level: InfoLevel},
+		{name: "from env", env: "DEBUG", level: DebugLevel},
+		{name: "option overrides env", env: "debug", opts: []Option{WithLevel(WarnLevel)}, level: WarnLevel},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -111,7 +105,7 @@ func TestNewLevel(t *testing.T) {
 			}
 			l, err := New(tt.opts...)
 			require.NoError(t, err)
-			assert.Equal(t, tt.level, l.log.Level())
+			assert.Equal(t, tt.level, l.level)
 		})
 	}
 }
@@ -147,6 +141,7 @@ func TestWithOutput(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, "hello", entries[0]["Body"])
 	assert.Equal(t, "INFO", entries[0]["Severity"])
+	assert.Contains(t, entries[0], "Timestamp")
 
 	o := defaultOptions(InfoLevel)
 	WithOutput(nil)(o)
@@ -186,19 +181,20 @@ func TestParse(t *testing.T) {
 func TestLoggerLevels(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
-		name     string
-		level    Level
-		log      func(l *Logger)
-		severity string
+		name          string
+		level         Level
+		log           func(l *Logger)
+		severity      string
+		wantStack     bool
 	}{
 		{name: "debug", level: DebugLevel, log: func(l *Logger) { l.Debug(ctx, "msg") }, severity: "DEBUG"},
 		{name: "info", level: DebugLevel, log: func(l *Logger) { l.Info(ctx, "msg") }, severity: "INFO"},
 		{name: "warn", level: DebugLevel, log: func(l *Logger) { l.Warn(ctx, "msg") }, severity: "WARN"},
-		{name: "error", level: DebugLevel, log: func(l *Logger) { l.Error(ctx, "msg") }, severity: "ERROR"},
+		{name: "error", level: DebugLevel, log: func(l *Logger) { l.Error(ctx, "msg") }, severity: "ERROR", wantStack: true},
 		{name: "debug filtered at info", level: InfoLevel, log: func(l *Logger) { l.Debug(ctx, "msg") }},
 		{name: "info filtered at warn", level: WarnLevel, log: func(l *Logger) { l.Info(ctx, "msg") }},
 		{name: "warn filtered at error", level: ErrorLevel, log: func(l *Logger) { l.Warn(ctx, "msg") }},
-		{name: "error kept at error", level: ErrorLevel, log: func(l *Logger) { l.Error(ctx, "msg") }, severity: "ERROR"},
+		{name: "error kept at error", level: ErrorLevel, log: func(l *Logger) { l.Error(ctx, "msg") }, severity: "ERROR", wantStack: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -213,6 +209,11 @@ func TestLoggerLevels(t *testing.T) {
 			require.Len(t, entries, 1)
 			assert.Equal(t, tt.severity, entries[0]["Severity"])
 			assert.Equal(t, "msg", entries[0]["Body"])
+			if tt.wantStack {
+				assert.NotEmpty(t, entries[0]["Stacktrace"])
+			} else {
+				assert.NotContains(t, entries[0], "Stacktrace")
+			}
 		})
 	}
 }
@@ -226,6 +227,7 @@ func TestLoggerFatal(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, "FATAL", entries[0]["Severity"])
 	assert.Equal(t, "fatal msg", entries[0]["Body"])
+	assert.NotEmpty(t, entries[0]["Stacktrace"])
 }
 
 func TestLoggerAttributes(t *testing.T) {
@@ -335,6 +337,7 @@ func TestNewNop(t *testing.T) {
 		l.Info(context.Background(), "msg", String("k", "v"))
 		l.Warn(context.Background(), "msg")
 		l.Error(context.Background(), "msg", Error(assert.AnError))
+		l.Fatal(context.Background(), "msg")
 		l.Close()
 	})
 }
@@ -345,7 +348,7 @@ func TestClose(t *testing.T) {
 		logger *Logger
 	}{
 		{name: "nop logger", logger: NewNop()},
-		{name: "nil zap logger", logger: &Logger{}},
+		{name: "zero value logger", logger: &Logger{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -392,7 +395,7 @@ func TestNewEmptyEnvLevel(t *testing.T) {
 	t.Setenv("FOUNDATION_LOG_LEVEL", "")
 	l, err := New()
 	require.NoError(t, err)
-	assert.Equal(t, zapcore.InfoLevel, l.log.Level())
+	assert.Equal(t, InfoLevel, l.level)
 }
 
 func TestLoggerNilSafety(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/zap/zapcore"
 )
 
 // verboseError is an error with a different verbose (%+v) representation.
@@ -44,12 +43,11 @@ type panicError struct{}
 
 func (panicError) Error() string { panic("boom") }
 
-func TestEncodeError(t *testing.T) {
+func TestErrorAttrs(t *testing.T) {
 	tests := []struct {
-		name    string
-		err     error
-		want    map[string]any
-		wantErr bool
+		name string
+		err  error
+		want map[string]any
 	}{
 		{name: "basic error", err: errors.New("boom"), want: map[string]any{"err": "boom"}},
 		{
@@ -67,41 +65,38 @@ func TestEncodeError(t *testing.T) {
 			err:  groupError{errs: []error{errors.New("a"), nil, errors.New("b")}},
 			want: map[string]any{
 				"err": "group",
-				"errCauses": []any{
-					map[string]any{"error": "a"},
-					map[string]any{"error": "b"},
+				"errCauses": []map[string]any{
+					{"error": "a"},
+					{"error": "b"},
+				},
+			},
+		},
+		{
+			name: "joined stdlib errors",
+			err:  errors.Join(errors.New("a"), errors.New("b")),
+			want: map[string]any{
+				"err": "a\nb",
+				"errCauses": []map[string]any{
+					{"error": "a"},
+					{"error": "b"},
 				},
 			},
 		},
 		{
 			name: "empty error group",
 			err:  groupError{},
-			want: map[string]any{"err": "group", "errCauses": []any{}},
+			want: map[string]any{"err": "group", "errCauses": []map[string]any{}},
 		},
 		{name: "nil pointer error", err: (*nilPointerError)(nil), want: map[string]any{"err": "<nil>"}},
-		{name: "panicking error", err: panicError{}, want: map[string]any{}, wantErr: true},
+		{name: "panicking error", err: panicError{}, want: map[string]any{"err": "PANIC=boom"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			enc := zapcore.NewMapObjectEncoder()
-			err := encodeError("err", tt.err, enc)
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "PANIC=")
-			} else {
-				assert.NoError(t, err)
+			got := make(map[string]any)
+			for _, a := range errorAttrs("err", tt.err) {
+				got[a.Key] = a.Value.Any()
 			}
-			assert.Equal(t, tt.want, enc.Fields)
+			assert.Equal(t, tt.want, got)
 		})
 	}
-}
-
-func TestErrArrayElem(t *testing.T) {
-	el := newErrArrayElem(errors.New("boom"))
-	enc := zapcore.NewMapObjectEncoder()
-	assert.NoError(t, enc.AddArray("errs", el))
-	assert.Equal(t, map[string]any{"errs": []any{map[string]any{"error": "boom"}}}, enc.Fields)
-
-	el.Free()
-	assert.Nil(t, el.err)
 }
