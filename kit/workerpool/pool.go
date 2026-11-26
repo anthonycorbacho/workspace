@@ -2,6 +2,9 @@ package workerpool
 
 import "github.com/gammazero/workerpool"
 
+// ErrStopped is returned by Submit when the worker pool is stopped.
+var ErrStopped = workerpool.ErrStopped
+
 // Task is the function task that will be submitted to the workers.
 type Task func()
 
@@ -17,16 +20,18 @@ func New(maxWorkers int) *Pool {
 	}
 }
 
-// Submit enqueues a function for a worker to execute.
+// Submit enqueues a function for a worker to execute. Returns ErrStopped if the
+// worker pool is stopped.
 //
 // Any external values needed by the task function must be captured in a
 // closure.
 // Any return values should be returned over a channel that is
 // captured in the task function closure.
 //
-// Submit will not block regardless of the number of tasks submitted.
-func (p *Pool) Submit(task Task) {
-	p.wp.Submit(task)
+// Submit will not block regardless of the number of tasks submitted, and is
+// safe to call concurrently with Stop or ForceStop.
+func (p *Pool) Submit(task Task) error {
+	return p.wp.Do(task)
 }
 
 // Stop stops the worker pool and waits for all queued tasks tasks to

@@ -81,6 +81,24 @@ func TestRetryContext(t *testing.T) {
 	}
 }
 
+func TestRetryContextCanceledWithReadyTimer(t *testing.T) {
+	errOp := errors.New("operation failed")
+	for range 100 {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		op := func() error {
+			calls++
+			cancel()
+			return errOp
+		}
+
+		err := doRetry(ctx, op, NewConstantBackOff(0), &testTimer{})
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorIs(t, err, errOp)
+		require.Equal(t, 1, calls)
+	}
+}
+
 func TestRetryOutcome(t *testing.T) {
 	errOp := errors.New("operation failed")
 
@@ -211,6 +229,16 @@ func TestRetryContextDone(t *testing.T) {
 				return ctx
 			},
 			backoff: NewConstantBackOff(time.Hour),
+			wantErr: context.Canceled,
+		},
+		{
+			name: "context already cancelled with zero backoff",
+			ctx: func(t *testing.T) context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+			backoff: NewConstantBackOff(0),
 			wantErr: context.Canceled,
 		},
 		{

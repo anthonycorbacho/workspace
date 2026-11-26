@@ -55,12 +55,20 @@ func doRetry(ctx context.Context, operation Operation, b BackOff, t timer) error
 			return giveUp(err, ErrPermanent)
 		}
 
+		if cerr := ctx.Err(); cerr != nil {
+			return giveUp(err, cerr)
+		}
+
 		t.Start(next)
 
 		select {
 		case <-ctx.Done():
 			return giveUp(err, ctx.Err())
 		case <-t.C():
+			// Re-check cancellation when both ctx.Done() and t.C() are ready.
+			if cerr := ctx.Err(); cerr != nil {
+				return giveUp(err, cerr)
+			}
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package workerpool
 
 import (
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +34,7 @@ func TestPool(t *testing.T) {
 
 			var running, maxRunning, done atomic.Int64
 			for range tt.tasks {
-				p.Submit(func() {
+				require.NoError(t, p.Submit(func() {
 					cur := running.Add(1)
 					for {
 						m := maxRunning.Load()
@@ -43,7 +45,7 @@ func TestPool(t *testing.T) {
 					time.Sleep(time.Millisecond)
 					running.Add(-1)
 					done.Add(1)
-				})
+				}))
 			}
 
 			// Stop waits for all the queued tasks to complete.
@@ -57,7 +59,7 @@ func TestPool(t *testing.T) {
 
 func TestPoolSubmitNil(t *testing.T) {
 	p := New(1)
-	assert.NotPanics(t, func() { p.Submit(nil) })
+	assert.NoError(t, p.Submit(nil))
 	p.Stop()
 	assert.True(t, p.Stopped())
 }
@@ -65,7 +67,45 @@ func TestPoolSubmitNil(t *testing.T) {
 func TestPoolSubmitAfterStop(t *testing.T) {
 	p := New(1)
 	p.Stop()
-	assert.Panics(t, func() { p.Submit(func() {}) })
+	assert.ErrorIs(t, p.Submit(func() {}), ErrStopped)
+}
+
+func TestPoolSubmitConcurrentWithStop(t *testing.T) {
+	p := New(2)
+
+	var wg sync.WaitGroup
+	var accepted, rejected, executed atomic.Int64
+
+	const producers = 8
+	const perProducer = 100
+	start := make(chan struct{})
+	for range producers {
+		wg.Go(func() {
+			<-start
+			for range perProducer {
+				err := p.Submit(func() {
+					executed.Add(1)
+				})
+				switch {
+				case err == nil:
+					accepted.Add(1)
+				case errors.Is(err, ErrStopped):
+					rejected.Add(1)
+				default:
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+
+	close(start)
+	time.Sleep(time.Millisecond)
+	p.Stop()
+	wg.Wait()
+
+	assert.True(t, p.Stopped())
+	assert.Equal(t, int64(producers*perProducer), accepted.Load()+rejected.Load())
+	assert.Equal(t, accepted.Load(), executed.Load())
 }
 
 func TestPoolStopIdempotent(t *testing.T) {
@@ -85,16 +125,16 @@ func TestPoolForceStop(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	p.Submit(func() {
+	require.NoError(t, p.Submit(func() {
 		close(started)
 		<-release
-	})
+	}))
 	<-started
 
 	// the only worker is busy, those tasks are queued.
 	var done atomic.Int64
 	for range pending {
-		p.Submit(func() { done.Add(1) })
+		require.NoError(t, p.Submit(func() { done.Add(1) }))
 	}
 
 	stopped := make(chan struct{})

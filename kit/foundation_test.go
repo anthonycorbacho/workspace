@@ -442,6 +442,33 @@ func TestHTTPPanicRecoveryOnWire(t *testing.T) {
 	assert.Equal(t, errors.InternalCode, body.Code)
 }
 
+func TestHTTPPanicRecoveryDiscardsStaleHeaders(t *testing.T) {
+	for _, tc := range []struct{ header, value string }{
+		{"Content-Length", "1"},
+		{"Content-Encoding", "gzip"},
+	} {
+		t.Run(tc.header, func(t *testing.T) {
+			f, err := NewFoundation("panic-headers")
+			require.NoError(t, err)
+			f.RegisterHTTPHandler("/", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(tc.header, tc.value)
+				panic("before the first write")
+			})
+			srv := httptest.NewServer(f.httpServer.Handler)
+			defer srv.Close()
+			client := srv.Client() // Let the transport decode gzip as a regular client would.
+			client.Timeout = 3 * time.Second
+
+			res := getHTTPResult(client, srv.URL)
+			require.Equal(t, http.StatusInternalServerError, res.status)
+			require.NoError(t, res.err)
+			var body httpError
+			require.NoError(t, json.Unmarshal([]byte(res.body), &body))
+			assert.Equal(t, errors.InternalCode, body.Code)
+		})
+	}
+}
+
 func TestServeContextCancel(t *testing.T) {
 	f, err := NewFoundation("test",
 		WithProbesAddr(freeAddr(t)),

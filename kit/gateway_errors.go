@@ -54,9 +54,13 @@ func writeGatewayError(ctx context.Context, l *log.Logger, w http.ResponseWriter
 	if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
 		body.TraceID = sc.TraceID().String()
 	}
-	w.Header().Del("Trailer")
-	w.Header().Del("Transfer-Encoding")
-	w.Header().Set("Content-Type", "application/json")
+	// The handler may have set headers for a different body before it failed.
+	header := w.Header()
+	header.Del("Content-Length")
+	header.Del("Content-Encoding")
+	header.Del("Trailer")
+	header.Del("Transfer-Encoding")
+	header.Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		l.Warn(ctx, "writing gateway error response", log.Error(err))
