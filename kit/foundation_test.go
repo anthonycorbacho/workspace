@@ -450,7 +450,7 @@ func TestHTTPPanicRecoveryDiscardsStaleHeaders(t *testing.T) {
 		t.Run(tc.header, func(t *testing.T) {
 			f, err := NewFoundation("panic-headers")
 			require.NoError(t, err)
-			f.RegisterHTTPHandler("/", func(w http.ResponseWriter, _ *http.Request) {
+			f.RegisterHTTPHandler("/panic-stale-headers", func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set(tc.header, tc.value)
 				panic("before the first write")
 			})
@@ -459,7 +459,7 @@ func TestHTTPPanicRecoveryDiscardsStaleHeaders(t *testing.T) {
 			client := srv.Client() // Let the transport decode gzip as a regular client would.
 			client.Timeout = 3 * time.Second
 
-			res := getHTTPResult(client, srv.URL)
+			res := getHTTPResult(client, srv.URL+"/panic-stale-headers")
 			require.Equal(t, http.StatusInternalServerError, res.status)
 			require.NoError(t, res.err)
 			var body httpError

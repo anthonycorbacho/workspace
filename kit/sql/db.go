@@ -18,6 +18,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// pgxDriverName is the registered database/sql driver name for PostgreSQL connections.
+const pgxDriverName = "pgx"
+
 // DB is a pool of database connections instrumented with OpenTelemetry (traces and metrics).
 //
 // It embeds *sqlx.DB, all the sqlx methods (GetContext, SelectContext, BeginTxx, ...) are available.
@@ -82,7 +85,7 @@ func open(connection string, opts ...Option) (*DB, error) {
 	// For backward compatibility
 	driver := url.Driver
 	if driver == "postgres" {
-		driver = "pgx"
+		driver = pgxDriverName
 	}
 
 	// otelsql reports the DB stats (e.g. # sql connection, etc) through a callback it never

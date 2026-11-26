@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"maps"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -303,6 +305,20 @@ func TestClientRetry(t *testing.T) {
 			wantAttempts: 1,
 		},
 		{
+			name:         "zero retries disables retry",
+			fetch:        failTimes(1, codes.Unavailable),
+			opts:         []grpc.CallOption{WithMaxRetries(0)},
+			wantCode:     codes.Unavailable,
+			wantAttempts: 1,
+		},
+		{
+			name:         "max uint does not overflow to disabled",
+			fetch:        failTimes(1, codes.Unavailable),
+			opts:         []grpc.CallOption{WithMaxRetries(math.MaxUint)},
+			wantCode:     codes.OK,
+			wantAttempts: 2,
+		},
+		{
 			name:         "retry unavailable until success",
 			fetch:        failTimes(2, codes.Unavailable),
 			opts:         []grpc.CallOption{WithMaxRetries(3)},
@@ -403,6 +419,144 @@ func TestValidation(t *testing.T) {
 			_, err := pb.NewSampleAppServiceClient(cc).Fetch(context.Background(), &pb.FetchRequest{Id: tt.id}, WithMaxRetries(3))
 			assert.Equal(t, tt.wantCode, status.Code(err), "error: %v", err)
 			assert.Equal(t, tt.wantAttempts, srv.calls.Load(), "invalid requests do not reach the handler")
+		})
+	}
+}
+
+type testStreamService interface{}
+
+func registerTestStreamService(s *grpc.Server) {
+	s.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "kit.test.v1.StreamService",
+		HandlerType: (*testStreamService)(nil),
+		Streams: []grpc.StreamDesc{
+			{
+				StreamName:    "ClientStream",
+				ClientStreams: true,
+				Handler: func(_ any, stream grpc.ServerStream) error {
+					var req pb.FetchRequest
+					if err := stream.RecvMsg(&req); err != nil {
+						return err
+					}
+					if err := stream.RecvMsg(&pb.FetchRequest{}); !errors.Is(err, io.EOF) {
+						return err
+					}
+					return stream.SendMsg(&pb.FetchResponse{Name: req.GetId()})
+				},
+			},
+			{
+				StreamName:    "BidiStream",
+				ClientStreams: true,
+				ServerStreams: true,
+				Handler: func(_ any, stream grpc.ServerStream) error {
+					var req pb.FetchRequest
+					if err := stream.RecvMsg(&req); err != nil {
+						return err
+					}
+					return stream.SendMsg(&pb.FetchResponse{Name: req.GetId()})
+				},
+			},
+		},
+	}, struct{}{})
+}
+
+func TestClientRetryStreaming(t *testing.T) {
+	srv := NewServer(nil)
+	registerTestStreamService(srv)
+	InitializeMetrics(srv)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	defaultCC, err := NewClient(
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = defaultCC.Close() })
+
+	retryingCC, err := NewClient(
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(WithMaxRetries(2)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = retryingCC.Close() })
+
+	tests := []struct {
+		name     string
+		cc       *grpc.ClientConn
+		method   string
+		desc     *grpc.StreamDesc
+		opts     []grpc.CallOption
+		wantCode codes.Code
+	}{
+		{
+			name:     "client stream with default client and WithMaxRetries(0) succeeds",
+			cc:       defaultCC,
+			method:   "/kit.test.v1.StreamService/ClientStream",
+			desc:     &grpc.StreamDesc{StreamName: "ClientStream", ClientStreams: true},
+			opts:     []grpc.CallOption{WithMaxRetries(0)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "bidi stream with default client and WithMaxRetries(0) succeeds",
+			cc:       defaultCC,
+			method:   "/kit.test.v1.StreamService/BidiStream",
+			desc:     &grpc.StreamDesc{StreamName: "BidiStream", ClientStreams: true, ServerStreams: true},
+			opts:     []grpc.CallOption{WithMaxRetries(0)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "client stream with default retries enabled is rejected",
+			cc:       retryingCC,
+			method:   "/kit.test.v1.StreamService/ClientStream",
+			desc:     &grpc.StreamDesc{StreamName: "ClientStream", ClientStreams: true},
+			wantCode: codes.Unimplemented,
+		},
+		{
+			name:     "client stream overrides default retries with WithMaxRetries(0)",
+			cc:       retryingCC,
+			method:   "/kit.test.v1.StreamService/ClientStream",
+			desc:     &grpc.StreamDesc{StreamName: "ClientStream", ClientStreams: true},
+			opts:     []grpc.CallOption{WithMaxRetries(0)},
+			wantCode: codes.OK,
+		},
+		{
+			name:     "bidi stream with default retries enabled is rejected",
+			cc:       retryingCC,
+			method:   "/kit.test.v1.StreamService/BidiStream",
+			desc:     &grpc.StreamDesc{StreamName: "BidiStream", ClientStreams: true, ServerStreams: true},
+			wantCode: codes.Unimplemented,
+		},
+		{
+			name:     "bidi stream overrides default retries with WithMaxRetries(0)",
+			cc:       retryingCC,
+			method:   "/kit.test.v1.StreamService/BidiStream",
+			desc:     &grpc.StreamDesc{StreamName: "BidiStream", ClientStreams: true, ServerStreams: true},
+			opts:     []grpc.CallOption{WithMaxRetries(0)},
+			wantCode: codes.OK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			stream, err := tt.cc.NewStream(ctx, tt.desc, tt.method, tt.opts...)
+			if tt.wantCode != codes.OK {
+				assert.Equal(t, tt.wantCode, status.Code(err), "error: %v", err)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, stream.SendMsg(&pb.FetchRequest{Id: "abcd"}))
+			require.NoError(t, stream.CloseSend())
+			var resp pb.FetchResponse
+			require.NoError(t, stream.RecvMsg(&resp))
+			assert.Equal(t, "abcd", resp.GetName())
 		})
 	}
 }

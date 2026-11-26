@@ -2,11 +2,13 @@ package mqtt
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
 	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracing"
+	"github.com/eclipse/paho.golang/packets"
 	"github.com/eclipse/paho.golang/paho"
 )
 
@@ -105,7 +107,10 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 	timeoutCtx, cancel := context.WithTimeout(ctx, publishTimeout)
 	defer cancel()
 
-	_, err := p.client.Publish(timeoutCtx, &publish)
+	resp, err := p.client.Publish(timeoutCtx, &publish)
+	if err == nil {
+		err = publishResponseError(resp)
+	}
 	// in case of error we set the trace to error and return.
 	if err != nil {
 		tracing.RecordError(span, err)
@@ -113,6 +118,25 @@ func (p *Publisher) Publish(ctx context.Context, topic string, msg pubsub.Messag
 	}
 
 	return nil
+}
+
+// publishResponseError converts a broker rejection reason code (>= 0x80) in a
+// PublishResponse into an error. Paho returns a nil error for QoS 2 PUBREC/PUBCOMP
+// rejections even when the broker rejected the publish.
+func publishResponseError(resp *paho.PublishResponse) error {
+	if resp == nil || resp.ReasonCode < 0x80 {
+		return nil
+	}
+	if resp.Properties != nil && resp.Properties.ReasonString != "" {
+		return fmt.Errorf("error publishing: reason code 0x%02x (%s)", resp.ReasonCode, resp.Properties.ReasonString)
+	}
+	if reason := (&packets.Pubrec{ReasonCode: resp.ReasonCode}).Reason(); reason != "" {
+		return fmt.Errorf("error publishing: %s", reason)
+	}
+	if reason := (&packets.Pubcomp{ReasonCode: resp.ReasonCode}).Reason(); reason != "" {
+		return fmt.Errorf("error publishing: %s", reason)
+	}
+	return fmt.Errorf("error publishing: reason code 0x%02x", resp.ReasonCode)
 }
 
 func (p *Publisher) isClosed() bool {

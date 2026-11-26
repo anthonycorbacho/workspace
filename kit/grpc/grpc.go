@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -121,8 +122,15 @@ func NewClient(addr string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 }
 
 // WithMaxRetries sets the maximum number of retries on this call, or this interceptor.
-// The call is attempted at most maxRetries+1 times (the initial call and its retries).
+// A value of 0 disables retries (allowing client-streaming and bidirectional RPCs).
+// Positive values attempt the call at most maxRetries+1 times (the initial call and its retries).
 func WithMaxRetries(maxRetries uint) grpcretry.CallOption {
+	if maxRetries == 0 {
+		return grpcretry.Disable()
+	}
+	if maxRetries == math.MaxUint {
+		return grpcretry.WithMax(math.MaxUint)
+	}
 	// grpcretry.WithMax is the maximum number of attempts, the initial call included.
 	return grpcretry.WithMax(maxRetries + 1)
 }

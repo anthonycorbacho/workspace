@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/errors"
 	"github.com/anthonycorbacho/workspace/kit/log"
@@ -14,6 +15,10 @@ import (
 )
 
 var _ pubsub.Subscriber = (*Subscriber)(nil)
+
+// drainFlushGrace is added on top of the connection DrainTimeout to allow NATS's
+// post-subscription publish FlushTimeout (5s) to finish before Close gives up.
+const drainFlushGrace = 5 * time.Second
 
 // Subscriber is our wrapper around NATS subscription.
 // In current implementation, one Subscriber corresponds to one NATS subscription,
@@ -77,10 +82,8 @@ func NewSubscriber(queueGroup string, natsClient *nats.Conn, jetStreamCtx nats.J
 	return s, nil
 }
 
-// Close notifies the Subscriber to stop processing messages on all subscriptions, and terminate the connection.
-//
-// It is caller's responsibility to configure client's connection's `DrainTimeout` and `ClosedHandler` (with WaitGroup)
-// https://docs.nats.io/using-nats/developer/receiving/drain
+// Close stops processing messages on all subscriptions, drains the connection,
+// and waits for the connection to close within a bounded timeout.
 func (s *Subscriber) Close() error {
 	if !s.markClosed() {
 		return nil
@@ -90,7 +93,38 @@ func (s *Subscriber) Close() error {
 	if s.nc.IsClosed() {
 		return pubsub.ErrSubscriberClosed
 	}
-	return s.nc.Drain()
+
+	closedCh := s.nc.StatusChanged(nats.CLOSED)
+	defer s.nc.RemoveStatusListener(closedCh)
+
+	if err := s.nc.Drain(); err != nil {
+		if errors.Is(err, nats.ErrConnectionClosed) {
+			return pubsub.ErrSubscriberClosed
+		}
+		return err
+	}
+
+	if s.nc.IsClosed() {
+		return s.nc.LastError()
+	}
+
+	timer := time.NewTimer(s.drainWaitTimeout())
+	defer timer.Stop()
+	select {
+	case <-closedCh:
+		return s.nc.LastError()
+	case <-timer.C:
+		s.nc.Close()
+		return nats.ErrDrainTimeout
+	}
+}
+
+func (s *Subscriber) drainWaitTimeout() time.Duration {
+	timeout := s.nc.Opts.DrainTimeout
+	if timeout <= 0 {
+		timeout = nats.DefaultDrainTimeout
+	}
+	return timeout + drainFlushGrace
 }
 
 // Subscribe consumes NATS Pub/Sub.
@@ -115,7 +149,8 @@ func (s *Subscriber) Subscribe(ctx context.Context, subscription string /* subje
 // MaxDeliver, a message nacked with a permanent error (see pubsub.Permanent) is terminated: it is not
 // redelivered. The delivery attempt is in the metadata (pubsub.MetadataDeliveryAttempt).
 //
-// The messages received once ctx is done or the subscriber is closed are nacked.
+// The subscription is automatically unsubscribed when ctx is done, and any
+// messages already buffered when ctx is done or the subscriber is closed are nacked.
 func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /* subject */, handler pubsub.HandlerWithAck) error {
 	if s.isClosed() || s.nc.IsClosed() {
 		return pubsub.ErrSubscriberClosed
@@ -123,23 +158,60 @@ func (s *Subscriber) SubscribeWithAck(ctx context.Context, subscription string /
 	if len(subscription) == 0 {
 		return fmt.Errorf("subscription is nil")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	subHandler := func(msg *nats.Msg) {
 		s.receive(ctx, msg, handler)
 	}
 
-	_, err := s.js.QueueSubscribe(
+	sub, err := s.js.QueueSubscribe(
 		subscription, /* subject */
 		s.queueGroup,
 		subHandler,
 		nats.Bind(s.consumer.Stream, s.consumer.Name),
 		nats.ManualAck())
 	if err != nil {
-
 		return fmt.Errorf("subscription init failed: %v", err)
 	}
 
+	// If Close raced with QueueSubscribe, remove the subscription immediately.
+	if s.isClosed() {
+		unsubscribeOnCancel(ctx, sub)
+		return pubsub.ErrSubscriberClosed
+	}
+
+	s.watchSubscription(ctx, sub)
 	return nil
+}
+
+// watchSubscription unsubscribes sub once ctx is canceled, stopping the server
+// from continuing to deliver messages to a canceled handler context.
+func (s *Subscriber) watchSubscription(ctx context.Context, sub *nats.Subscription) {
+	if ctx.Done() == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			unsubscribeOnCancel(ctx, sub)
+		case <-s.closing:
+		}
+	}()
+}
+
+// unsubscribeOnCancel removes sub on context cancellation.
+// Errors expected during concurrent shutdown or already-closed subscriptions are ignored.
+func unsubscribeOnCancel(ctx context.Context, sub *nats.Subscription) {
+	err := sub.Unsubscribe()
+	if err == nil ||
+		errors.Is(err, nats.ErrBadSubscription) ||
+		errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, nats.ErrConnectionDraining) {
+		return
+	}
+	log.L().Warn(ctx, "failed to unsubscribe canceled subscription", log.Error(err))
 }
 
 func (s *Subscriber) receive(ctx context.Context, msg *nats.Msg, handler pubsub.HandlerWithAck) {

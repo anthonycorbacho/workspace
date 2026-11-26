@@ -7,9 +7,11 @@ import (
 	"time"
 
 	"github.com/anthonycorbacho/workspace/kit/pubsub"
+	"github.com/anthonycorbacho/workspace/kit/pubsub/internal/tracingtest"
 	"github.com/eclipse/paho.golang/packets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const mqttTestTimeout = 3 * time.Second
@@ -267,4 +269,109 @@ func TestSubscriberCloseDuringRestoration(t *testing.T) {
 	require.NoError(t, awaitMQTTResult(t, closed))
 	require.NoError(t, subscriber.Close())
 	assert.ErrorIs(t, subscriber.Subscribe(context.Background(), "kit/close", handler), pubsub.ErrSubscriberClosed)
+}
+
+func TestPublisherQoS2Responses(t *testing.T) {
+	tests := []struct {
+		name         string
+		respond      func(t *testing.T, conn net.Conn, pub *packets.Publish)
+		wantErr      string
+		wantSpanCode codes.Code
+	}{
+		{
+			name: "PUBREC rejection returns error and marks span",
+			respond: func(t *testing.T, conn net.Conn, pub *packets.Publish) {
+				writeMQTTPacket(t, conn, &packets.Pubrec{
+					PacketID:   pub.PacketID,
+					ReasonCode: packets.PubrecNotAuthorized,
+					Properties: &packets.Properties{ReasonString: "acl denied"},
+				})
+			},
+			wantErr:      "acl denied",
+			wantSpanCode: codes.Error,
+		},
+		{
+			name: "PUBREC rejection without reason string uses MQTT reason",
+			respond: func(t *testing.T, conn net.Conn, pub *packets.Publish) {
+				writeMQTTPacket(t, conn, &packets.Pubrec{
+					PacketID:   pub.PacketID,
+					ReasonCode: packets.PubrecNotAuthorized,
+					Properties: &packets.Properties{},
+				})
+			},
+			wantErr:      "Not authorized",
+			wantSpanCode: codes.Error,
+		},
+		{
+			name: "PUBCOMP rejection returns error and marks span",
+			respond: func(t *testing.T, conn net.Conn, pub *packets.Publish) {
+				writeMQTTPacket(t, conn, &packets.Pubrec{
+					PacketID:   pub.PacketID,
+					ReasonCode: packets.PubrecSuccess,
+					Properties: &packets.Properties{},
+				})
+				rel := readMQTTPacket(t, conn, packets.PUBREL).Content.(*packets.Pubrel)
+				assert.Equal(t, pub.PacketID, rel.PacketID)
+				writeMQTTPacket(t, conn, &packets.Pubcomp{
+					PacketID:   pub.PacketID,
+					ReasonCode: packets.PubcompPacketIdentifierNotFound,
+					Properties: &packets.Properties{},
+				})
+			},
+			wantErr:      "Packet Identifier not found",
+			wantSpanCode: codes.Error,
+		},
+		{
+			name: "PUBREC no matching subscribers and PUBCOMP success succeeds",
+			respond: func(t *testing.T, conn net.Conn, pub *packets.Publish) {
+				writeMQTTPacket(t, conn, &packets.Pubrec{
+					PacketID:   pub.PacketID,
+					ReasonCode: packets.PubrecNoMatchingSubscribers,
+					Properties: &packets.Properties{},
+				})
+				rel := readMQTTPacket(t, conn, packets.PUBREL).Content.(*packets.Pubrel)
+				assert.Equal(t, pub.PacketID, rel.PacketID)
+				writeMQTTPacket(t, conn, &packets.Pubcomp{
+					PacketID:   pub.PacketID,
+					ReasonCode: packets.PubcompSuccess,
+					Properties: &packets.Properties{},
+				})
+			},
+			wantSpanCode: codes.Unset,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := tracingtest.NewRecorder(t)
+			prevTracer := tracer
+			tracer = rec.Tracer()
+			t.Cleanup(func() { tracer = prevTracer })
+
+			client, _, conn := newMQTTTestClient(t)
+			publisher, err := NewPublisher(client)
+			require.NoError(t, err)
+
+			published := make(chan error, 1)
+			go func() {
+				published <- publisher.Publish(t.Context(), "kit/qos2", []byte("payload"), pubsub.WithQoS(2))
+			}()
+
+			pub := readMQTTPacket(t, conn, packets.PUBLISH).Content.(*packets.Publish)
+			assert.Equal(t, byte(2), pub.QoS)
+			tt.respond(t, conn, pub)
+
+			err = awaitMQTTResult(t, published)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			spans := rec.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, tt.wantSpanCode, spans[0].Status().Code)
+		})
+	}
 }

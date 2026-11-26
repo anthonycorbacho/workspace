@@ -23,6 +23,7 @@ type Cache interface {
 	// if the data already exist in the cache, it will be replaced by the new value and the new duration.
 	// If duration is set to Zero (0), the cache will never expire until removed by calling Delete function
 	// or cache is flush.
+	// Negative durations are rejected with ErrExpirationInvalid unless supported as a backend sentinel (such as redis.KeepTTL).
 	Set(ctx context.Context, key string, value any, expiration time.Duration) error
 
 	// Delete deletes data from the cache.

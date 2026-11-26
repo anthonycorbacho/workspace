@@ -28,8 +28,9 @@ func New(opt *redis.Options) (*Cache, error) {
 	// create the client
 	rdb := redis.NewClient(opt)
 
-	// Enable tracing instrumentation.
-	if err := redisotel.InstrumentTracing(rdb); err != nil {
+	// Enable tracing instrumentation without raw Redis command arguments,
+	// so cached values, tokens, and PII are not exported in trace spans.
+	if err := redisotel.InstrumentTracing(rdb, redisotel.WithDBStatement(false)); err != nil {
 		_ = rdb.Close() //nolint:errcheck // the instrumentation error is more relevant.
 		return nil, errors.Wrap(err, "redis tracing")
 	}
@@ -140,6 +141,10 @@ func (c *Cache) Set(ctx context.Context, key string, value any, expiration time.
 
 	if value == nil {
 		return cache.ErrValueInvalid
+	}
+
+	if expiration < 0 && expiration != redis.KeepTTL {
+		return cache.ErrExpirationInvalid
 	}
 
 	b, err := cache.Marshal(value)

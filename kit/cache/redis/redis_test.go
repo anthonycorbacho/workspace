@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 type redisTestSuite struct {
@@ -276,6 +280,11 @@ func (r *redisTestSuite) TestErrors() {
 			wantErr: cache.ErrValueInvalid,
 		},
 		{
+			name:    "set negative expiration",
+			call:    func() error { return r.cache.Set(ctx, key, "value", -time.Second) },
+			wantErr: cache.ErrExpirationInvalid,
+		},
+		{
 			name:   "set value that cannot be marshalled",
 			call:   func() error { return r.cache.Set(ctx, key, make(chan int), 0) },
 			anyErr: true,
@@ -334,6 +343,24 @@ func (r *redisTestSuite) TestSetReplacesValueAndExpiration() {
 	var v string
 	r.Require().NoError(r.cache.Get(ctx, key, &v))
 	r.Equal("second", v)
+}
+
+func (r *redisTestSuite) TestSetKeepTTL() {
+	ctx := context.TODO()
+	key := fmt.Sprintf("key_%s", id.New())
+	defer r.cache.Delete(ctx, key)
+
+	r.Require().NoError(r.cache.Set(ctx, key, "first", 150*time.Millisecond))
+	r.Require().NoError(r.cache.Set(ctx, key, "second", redis.KeepTTL))
+
+	var v string
+	r.Require().NoError(r.cache.Get(ctx, key, &v))
+	r.Equal("second", v)
+
+	r.Eventually(func() bool {
+		var v string
+		return errors.Is(r.cache.Get(ctx, key, &v), cache.ErrNotFound)
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 func (r *redisTestSuite) TestMultiGet() {
@@ -534,4 +561,97 @@ func TestResultBytes(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestSetExpirationValidation(t *testing.T) {
+	c := &Cache{}
+	ctx := context.Background()
+
+	tests := []struct {
+		name       string
+		expiration time.Duration
+	}{
+		{name: "negative second", expiration: -time.Second},
+		{name: "negative two nanoseconds", expiration: -2},
+		{name: "negative minute", expiration: -time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.ErrorIs(t, c.Set(ctx, "key", "value", tt.expiration), cache.ErrExpirationInvalid)
+		})
+	}
+}
+
+func TestTracingOmitsDBStatement(t *testing.T) {
+	recorder := &spanRecorder{}
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prev)
+		assert.NoError(t, tp.Shutdown(context.Background()))
+	})
+
+	const secret = "super-secret-session-token"
+	var sawKeepTTL bool
+	c, err := New(&redis.Options{
+		Addr: "127.0.0.1:0",
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("dial should not be called")
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// Short-circuit command execution after tracingHook so this test runs without a Redis server.
+	c.client.AddHook(stubProcessHook(func(_ context.Context, cmd redis.Cmder) error {
+		args := cmd.Args()
+		for _, arg := range args {
+			if s, ok := arg.(string); ok && strings.EqualFold(s, "keepttl") {
+				sawKeepTTL = true
+			}
+		}
+		return nil
+	}))
+
+	require.NoError(t, c.Set(context.Background(), "session:42", secret, redis.KeepTTL))
+	assert.True(t, sawKeepTTL, "redis.KeepTTL should be forwarded to Redis")
+
+	spans := recorder.ended()
+	require.NotEmpty(t, spans)
+	for _, span := range spans {
+		for _, attr := range span.Attributes() {
+			assert.NotEqual(t, "db.statement", string(attr.Key), "raw Redis commands must not be exported in traces")
+			assert.NotContains(t, attr.Value.Emit(), secret, "cached payload must not leak in trace attributes")
+		}
+	}
+}
+
+type spanRecorder struct {
+	mu    sync.Mutex
+	spans []sdktrace.ReadOnlySpan
+}
+
+func (r *spanRecorder) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+func (r *spanRecorder) OnEnd(s sdktrace.ReadOnlySpan) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.spans = append(r.spans, s)
+}
+func (r *spanRecorder) Shutdown(context.Context) error   { return nil }
+func (r *spanRecorder) ForceFlush(context.Context) error { return nil }
+func (r *spanRecorder) ended() []sdktrace.ReadOnlySpan {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]sdktrace.ReadOnlySpan(nil), r.spans...)
+}
+
+type stubProcessHook func(context.Context, redis.Cmder) error
+
+func (h stubProcessHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h stubProcessHook) ProcessHook(redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error { return h(ctx, cmd) }
+}
+func (h stubProcessHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
 }
